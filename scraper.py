@@ -377,7 +377,7 @@ def main():
             progress["last_success_id"] = current_id
             
             save_remote_json(
-                "progress.json"， 
+                "progress.json", 
                 progress, 
                 f"Complete: {current_url}"
             )
