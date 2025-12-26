@@ -80,6 +80,7 @@ export BACKUP_HOUR=4
 # 备份保留天数
 export KEEP_DAYS=5
 ```
+[也可以预构建自己的包](https://github.com/oyz8/action/blob/main/.github/workflows/Uptime-Kuma.yml)
 
 > 💡 **WebDAV 推荐：** 本项目使用 [InfiniCLOUD (Teracloud)](https://infini-cloud.net/en/) 作为备份存储
 > 
