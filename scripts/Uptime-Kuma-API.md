@@ -78,6 +78,8 @@
 }
 ```
 
+![Webhook 配置](https://raw.githubusercontent.com/oyz8/action/refs/heads/main/img/Uptime-Kuma-Webhook%E9%85%8D%E7%BD%AE.png)
+
 ---
 
 ## 📝 参数说明
