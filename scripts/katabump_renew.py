@@ -21,7 +21,7 @@ SERVER_ID = os.environ.get('KATA_SERVER_ID') or ''
 KATA_EMAIL = os.environ.get('KATA_EMAIL') or ''
 KATA_PASSWORD = os.environ.get('KATA_PASSWORD') or ''
 TG_BOT_TOKEN = os.environ.get('TG_BOT_TOKEN') or ''
-TG_CHAT_ID = os.environ.get('TG_CHAT_ID') or ''
+TG_CHAT_ID = os.environ.get('TG_USER_ID') or ''
 CAPSOLVER_KEY = os.environ.get('CAPSOLVER_KEY') or ''
 SCREENSHOT_DIR = os.environ.get('SCREENSHOT_DIR') or '/tmp'
 TURNSTILE_SITEKEY = '0x4AAAAAAA1IssKDXD0TRMjP'
@@ -127,18 +127,39 @@ async def run():
     server_url = f'{DASHBOARD_URL}/servers/edit?id={SERVER_ID}'
     
     async with async_playwright() as p:
+        # 使用新版 headless 模式，更难被检测
         browser = await p.chromium.launch(
             headless=True,
-            args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-blink-features=AutomationControlled']
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-infobars',
+                '--window-size=1280,900',
+                '--start-maximized',
+            ]
         )
         
         context = await browser.new_context(
             viewport={'width': 1280, 'height': 900},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            locale='en-US',
+            timezone_id='America/New_York',
         )
         
         page = await context.new_page()
-        await page.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
+        
+        # 更完整的反检测脚本
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            window.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'permissions', {
+                get: () => ({ query: () => Promise.resolve({ state: 'granted' }) })
+            });
+        """)
         
         try:
             # 登录
@@ -213,8 +234,23 @@ async def run():
             
             if await turnstile.count() > 0:
                 log('🛡 检测到 Turnstile 验证码')
-                log('⏳ 等待 Turnstile 自动验证...')
                 
+                # 等待 iframe 加载
+                await page.wait_for_timeout(2000)
+                
+                # 尝试点击 Turnstile checkbox
+                log('🖱 尝试点击 Turnstile...')
+                try:
+                    turnstile_iframe = page.frame_locator('#renew-modal iframe[src*="turnstile"]').first
+                    checkbox = turnstile_iframe.locator('input[type="checkbox"], .cb-i, #cf-stage')
+                    if await checkbox.count() > 0:
+                        await checkbox.first.click()
+                        log('✅ 已点击 Turnstile checkbox')
+                except Exception as e:
+                    log(f'⚠️ 点击 checkbox 失败: {e}')
+                
+                # 等待验证完成
+                log('⏳ 等待 Turnstile 验证...')
                 response_input = page.locator('#renew-modal input[name="cf-turnstile-response"]')
                 
                 for i in range(30):
@@ -223,12 +259,16 @@ async def run():
                     if await response_input.count() > 0:
                         current_value = await response_input.get_attribute('value') or ''
                         if len(current_value) > 20:
-                            log(f'✅ Turnstile 自动验证成功 ({i+1}秒)')
+                            log(f'✅ Turnstile 验证成功 ({i+1}秒)')
                             turnstile_token = current_value
                             break
                     
                     if i % 5 == 4:
                         log(f'⏳ 继续等待... ({i+1}秒)')
+                        # 每5秒截图查看状态
+                        if i == 9:
+                            screenshot_path = os.path.join(SCREENSHOT_DIR, 'turnstile_waiting.png')
+                            await page.screenshot(path=screenshot_path, full_page=True)
                 
                 if not turnstile_token and CAPSOLVER_KEY:
                     turnstile_token = solve_turnstile_capsolver(server_url, TURNSTILE_SITEKEY)
@@ -238,9 +278,10 @@ async def run():
                 
                 if not turnstile_token:
                     log('❌ Turnstile 验证失败')
+                    screenshot_path = os.path.join(SCREENSHOT_DIR, 'turnstile_failed.png')
+                    await page.screenshot(path=screenshot_path, full_page=True)
+                    
                     if days is not None and days <= 3:
-                        screenshot_path = os.path.join(SCREENSHOT_DIR, 'turnstile_failed.png')
-                        await page.screenshot(path=screenshot_path, full_page=True)
                         tg_notify_photo(screenshot_path, f'⚠️ 需要手动续订\n服务器: {SERVER_ID}\n到期: {old_expiry} (剩余 {days} 天)\n\n👉 {server_url}')
                     else:
                         log(f'ℹ️ 剩余 {days} 天，暂不紧急')
