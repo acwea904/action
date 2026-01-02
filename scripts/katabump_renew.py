@@ -21,7 +21,7 @@ SERVER_ID = os.environ.get('KATA_SERVER_ID') or ''
 KATA_EMAIL = os.environ.get('KATA_EMAIL') or ''
 KATA_PASSWORD = os.environ.get('KATA_PASSWORD') or ''
 TG_BOT_TOKEN = os.environ.get('TG_BOT_TOKEN') or ''
-TG_CHAT_ID = os.environ.get('TG_CHAT_ID') or ''
+TG_CHAT_ID = os.environ.get('TG_USER_ID') or ''
 
 # Capsolver API Key (用于解决 Turnstile 验证码)
 CAPSOLVER_KEY = os.environ.get('CAPSOLVER_KEY') or ''
@@ -81,7 +81,6 @@ def solve_turnstile_capsolver(page_url, sitekey):
     log('🔄 正在使用 Capsolver 解决 Turnstile...')
     
     try:
-        # 创建任务
         create_task_url = 'https://api.capsolver.com/createTask'
         task_payload = {
             'clientKey': CAPSOLVER_KEY,
@@ -102,9 +101,8 @@ def solve_turnstile_capsolver(page_url, sitekey):
         task_id = result.get('taskId')
         log(f'📋 Capsolver 任务创建成功: {task_id}')
         
-        # 轮询获取结果
         get_result_url = 'https://api.capsolver.com/getTaskResult'
-        for i in range(60):  # 最多等待 60 秒
+        for i in range(60):
             time.sleep(1)
             
             resp = requests.post(get_result_url, json={
@@ -147,6 +145,15 @@ def days_until(date_str):
         return None
 
 
+async def safe_wait(page, timeout=5000):
+    """安全等待页面加载，不使用 networkidle"""
+    try:
+        await page.wait_for_load_state('domcontentloaded', timeout=timeout)
+    except:
+        pass
+    await page.wait_for_timeout(2000)
+
+
 async def run():
     log('🚀 KataBump 自动续订 (支持 Turnstile)')
     log(f'🖥 服务器 ID: {SERVER_ID}')
@@ -185,10 +192,10 @@ async def run():
             log('🔐 正在登录...')
             
             await page.goto(f'{DASHBOARD_URL}/auth/login', timeout=60000)
-            await page.wait_for_load_state('networkidle', timeout=30000)
+            await safe_wait(page, 10000)
             
             email_input = page.locator('input[name="email"], input[type="email"]')
-            await email_input.wait_for(timeout=10000)
+            await email_input.wait_for(timeout=15000)
             await email_input.fill(KATA_EMAIL)
             
             password_input = page.locator('input[name="password"], input[type="password"]')
@@ -197,8 +204,14 @@ async def run():
             login_btn = page.locator('button[type="submit"], input[type="submit"]')
             await login_btn.first.click()
             
-            await page.wait_for_timeout(3000)
-            await page.wait_for_load_state('networkidle', timeout=30000)
+            # 等待登录完成
+            await page.wait_for_timeout(4000)
+            
+            # 等待 URL 变化或特定元素出现
+            try:
+                await page.wait_for_url('**/dashboard**', timeout=15000)
+            except:
+                pass
             
             if '/auth/login' in page.url:
                 screenshot_path = os.path.join(SCREENSHOT_DIR, 'login_failed.png')
@@ -209,11 +222,21 @@ async def run():
             log('✅ 登录成功')
             
             # ========== 打开服务器页面 ==========
-            log(f'📄 打开服务器页面...')
+            log(f'📄 打开服务器页面: {server_url}')
             
-            await page.goto(server_url, timeout=90000)
-            await page.wait_for_load_state('networkidle', timeout=30000)
-            await page.wait_for_timeout(2000)
+            # 使用更宽松的加载策略
+            await page.goto(server_url, timeout=60000, wait_until='domcontentloaded')
+            
+            # 等待页面关键元素出现，而不是等待所有网络请求完成
+            log('⏳ 等待页面加载...')
+            try:
+                # 等待 Renew 按钮出现，表示页面已加载
+                await page.locator('button[data-bs-target="#renew-modal"]').wait_for(timeout=20000)
+                log('✅ 页面加载完成')
+            except:
+                # 备用等待
+                await page.wait_for_timeout(5000)
+                log('⚠️ 使用备用等待')
             
             # 获取当前到期时间
             page_content = await page.content()
@@ -237,7 +260,7 @@ async def run():
             
             log('🖱 点击 Renew 按钮打开模态框...')
             await main_renew_btn.first.click()
-            await page.wait_for_timeout(1500)
+            await page.wait_for_timeout(2000)
             
             # ========== 等待模态框 ==========
             modal = page.locator('#renew-modal')
@@ -245,26 +268,33 @@ async def run():
                 await modal.wait_for(state='visible', timeout=5000)
                 log('✅ 模态框已打开')
             except:
+                screenshot_path = os.path.join(SCREENSHOT_DIR, 'modal_error.png')
+                await page.screenshot(path=screenshot_path, full_page=True)
+                tg_notify_photo(screenshot_path, '❌ 模态框未打开')
                 raise Exception('模态框未打开')
             
             # ========== 处理 Turnstile 验证码 ==========
             log('🔍 检查 Turnstile 验证码...')
             
-            turnstile = page.locator('.cf-turnstile, [data-sitekey]')
+            turnstile = page.locator('#renew-modal .cf-turnstile, #renew-modal [data-sitekey]')
             turnstile_token = None
             
             if await turnstile.count() > 0:
                 log('🛡 检测到 Turnstile 验证码')
                 
-                # 等待 Turnstile 自动完成（有时候会自动通过）
-                log('⏳ 等待 Turnstile 自动验证...')
+                # 等待 Turnstile iframe 加载
+                log('⏳ 等待 Turnstile 加载...')
                 await page.wait_for_timeout(5000)
                 
-                # 检查是否有 cf-turnstile-response
-                response_input = page.locator('input[name="cf-turnstile-response"]')
+                # 截图查看当前状态
+                screenshot_path = os.path.join(SCREENSHOT_DIR, 'turnstile_state.png')
+                await page.screenshot(path=screenshot_path, full_page=True)
+                
+                # 检查是否已有 token（自动验证通过）
+                response_input = page.locator('#renew-modal input[name="cf-turnstile-response"]')
                 if await response_input.count() > 0:
-                    current_value = await response_input.get_attribute('value')
-                    if current_value and len(current_value) > 10:
+                    current_value = await response_input.get_attribute('value') or ''
+                    if len(current_value) > 20:
                         log('✅ Turnstile 自动验证成功')
                         turnstile_token = current_value
                 
@@ -273,24 +303,32 @@ async def run():
                     turnstile_token = solve_turnstile_capsolver(server_url, TURNSTILE_SITEKEY)
                     
                     if turnstile_token:
-                        # 注入 token
-                        await page.evaluate(f'''
-                            (token) => {{
-                                const input = document.querySelector('input[name="cf-turnstile-response"]');
-                                if (input) {{
+                        # 注入 token 到表单
+                        await page.evaluate('''
+                            (token) => {
+                                const inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
+                                inputs.forEach(input => {
                                     input.value = token;
-                                }}
-                                // 尝试调用 turnstile 回调
-                                if (window.turnstile && window.turnstile.getResponse) {{
-                                    // 已有实现
-                                }}
-                            }}
+                                });
+                                
+                                // 创建隐藏 input（如果不存在）
+                                const modal = document.querySelector('#renew-modal');
+                                if (modal) {
+                                    const form = modal.querySelector('form');
+                                    if (form && !form.querySelector('input[name="cf-turnstile-response"]')) {
+                                        const hiddenInput = document.createElement('input');
+                                        hiddenInput.type = 'hidden';
+                                        hiddenInput.name = 'cf-turnstile-response';
+                                        hiddenInput.value = token;
+                                        form.appendChild(hiddenInput);
+                                    }
+                                }
+                            }
                         ''', turnstile_token)
                         log('✅ Turnstile token 已注入')
                 
                 if not turnstile_token:
-                    screenshot_path = os.path.join(SCREENSHOT_DIR, 'captcha_required.png')
-                    await page.screenshot(path=screenshot_path, full_page=True)
+                    log('❌ 无法解决验证码')
                     
                     if days is not None and days <= 3:
                         tg_notify_photo(
@@ -299,12 +337,14 @@ async def run():
                             f'🖥 服务器: <code>{SERVER_ID}</code>\n'
                             f'📅 到期: {old_expiry}\n'
                             f'⏰ 剩余: {days} 天\n'
-                            f'❗ 需要验证码，请配置 CAPSOLVER_KEY 或手动续订\n\n'
+                            f'❗ 需要验证码\n\n'
                             f'👉 <a href="{server_url}">手动续订</a>'
                         )
                     else:
-                        log(f'⏳ 剩余 {days} 天，暂不需要续订')
+                        log(f'ℹ️ 剩余 {days} 天，暂不紧急')
                     return
+            else:
+                log('✅ 无需验证码')
             
             # ========== 提交续订 ==========
             log('🖱 点击确认 Renew...')
@@ -315,21 +355,32 @@ async def run():
             
             await submit_btn.first.click()
             
-            await page.wait_for_timeout(3000)
-            await page.wait_for_load_state('networkidle', timeout=30000)
+            # 等待页面跳转
+            log('⏳ 等待服务器响应...')
+            await page.wait_for_timeout(5000)
+            
+            # 等待可能的页面跳转
+            try:
+                await page.wait_for_load_state('domcontentloaded', timeout=15000)
+            except:
+                pass
             
             # ========== 检查结果 ==========
             log('🔍 检查续订结果...')
             
             current_url = page.url
+            log(f'📍 当前 URL: {current_url}')
+            
             page_content = await page.content()
             
-            if 'renew=success' in current_url or 'success' in page_content.lower():
+            # 截图保存结果
+            screenshot_path = os.path.join(SCREENSHOT_DIR, 'result.png')
+            await page.screenshot(path=screenshot_path, full_page=True)
+            
+            if 'renew=success' in current_url:
                 new_expiry = get_expiry_from_text(page_content) or '未知'
                 log(f'🎉 续订成功！新到期: {new_expiry}')
                 
-                screenshot_path = os.path.join(SCREENSHOT_DIR, 'success.png')
-                await page.screenshot(path=screenshot_path, full_page=True)
                 tg_notify_photo(
                     screenshot_path,
                     f'✅ KataBump 续订成功\n\n'
@@ -337,39 +388,61 @@ async def run():
                     f'📅 原到期: {old_expiry}\n'
                     f'📅 新到期: {new_expiry}'
                 )
-            elif 'error' in current_url.lower():
-                error_match = re.search(r'error=([^&]+)', current_url)
-                error_msg = error_match.group(1) if error_match else '未知错误'
-                log(f'❌ 续订失败: {error_msg}')
                 
-                screenshot_path = os.path.join(SCREENSHOT_DIR, 'error.png')
-                await page.screenshot(path=screenshot_path, full_page=True)
-                tg_notify_photo(screenshot_path, f'❌ 续订失败: {error_msg}')
+            elif 'renew-error' in current_url:
+                error_match = re.search(r'renew-error=([^&]+)', current_url)
+                error_msg = '未知错误'
+                if error_match:
+                    from urllib.parse import unquote
+                    error_msg = unquote(error_match.group(1).replace('+', ' '))
+                
+                log(f'⚠️ 续订受限: {error_msg}')
+                
+                if days is not None and days <= 2:
+                    tg_notify_photo(
+                        screenshot_path,
+                        f'ℹ️ KataBump 续订提醒\n\n'
+                        f'🖥 服务器: <code>{SERVER_ID}</code>\n'
+                        f'📅 到期: {old_expiry}\n'
+                        f'⏰ 剩余: {days} 天\n'
+                        f'📝 {error_msg}'
+                    )
+                    
             else:
-                # 重新获取到期时间检查
-                await page.goto(server_url, timeout=60000)
-                await page.wait_for_load_state('networkidle')
+                # 重新访问检查到期时间
+                log('🔄 重新检查到期时间...')
+                await page.goto(server_url, timeout=60000, wait_until='domcontentloaded')
+                await page.wait_for_timeout(3000)
+                
                 page_content = await page.content()
                 new_expiry = get_expiry_from_text(page_content) or '未知'
                 
-                if new_expiry != old_expiry and new_expiry > old_expiry:
-                    log(f'🎉 续订成功！新到期: {new_expiry}')
-                    screenshot_path = os.path.join(SCREENSHOT_DIR, 'success.png')
-                    await page.screenshot(path=screenshot_path, full_page=True)
-                    tg_notify_photo(
-                        screenshot_path,
-                        f'✅ KataBump 续订成功\n\n'
-                        f'🖥 服务器: <code>{SERVER_ID}</code>\n'
-                        f'📅 原到期: {old_expiry}\n'
-                        f'📅 新到期: {new_expiry}'
-                    )
+                if new_expiry != '未知' and old_expiry != '未知':
+                    if new_expiry > old_expiry:
+                        log(f'🎉 续订成功！新到期: {new_expiry}')
+                        
+                        screenshot_path = os.path.join(SCREENSHOT_DIR, 'success.png')
+                        await page.screenshot(path=screenshot_path, full_page=True)
+                        tg_notify_photo(
+                            screenshot_path,
+                            f'✅ KataBump 续订成功\n\n'
+                            f'🖥 服务器: <code>{SERVER_ID}</code>\n'
+                            f'📅 原到期: {old_expiry}\n'
+                            f'📅 新到期: {new_expiry}'
+                        )
+                    else:
+                        log(f'ℹ️ 到期时间未变化: {new_expiry}')
+                        if days is not None and days <= 2:
+                            tg_notify_photo(
+                                screenshot_path,
+                                f'⚠️ 请检查续订状态\n\n'
+                                f'🖥 服务器: <code>{SERVER_ID}</code>\n'
+                                f'📅 到期: {new_expiry}\n'
+                                f'⏰ 剩余: {days} 天\n\n'
+                                f'👉 <a href="{server_url}">手动查看</a>'
+                            )
                 else:
-                    log(f'⚠️ 续订状态未知')
-                    screenshot_path = os.path.join(SCREENSHOT_DIR, 'unknown.png')
-                    await page.screenshot(path=screenshot_path, full_page=True)
-                    
-                    if days is not None and days <= 2:
-                        tg_notify_photo(screenshot_path, f'⚠️ 请检查续订状态\n到期: {new_expiry}')
+                    log(f'⚠️ 续订状态未知，到期: {new_expiry}')
         
         except Exception as e:
             log(f'❌ 错误: {e}')
