@@ -19,11 +19,20 @@ jobs:
         run: |
           pip install playwright requests
           playwright install chromium
+          playwright install-deps
       
       - name: Run renew script
         env:
-          REMEMBER_COOKIE: ${{ secrets.REMEMBER_COOKIE }}
           SERVER_ID: ${{ secrets.SERVER_ID }}
+          WEIRDHOST_COOKIE: ${{ secrets.WEIRDHOST_COOKIE }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: python scripts/renew.py
+        run: python scripts/weirdhost_renew.py
+      
+      - name: Upload debug screenshot
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshot
+          path: "*.png"
+          retention-days: 3
