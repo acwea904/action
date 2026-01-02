@@ -1,11 +1,8 @@
 name: KataBump 自动续订
 
 on:
-  # 定时运行：每天 9:00 和 21:00 (UTC+8)
-  #schedule:
-  #  - cron: '0 1,13 * * *'  # UTC 时间，对应北京时间 9:00, 21:00
-  
-  # 手动触发
+  #  #schedu
+  #  -   #  - cron: '0 1,13 *# UTC 时间 = 北京时间 9:00, 21:00
   workflow_dispatch:
 
 jobs:
@@ -13,11 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
       
-      - name: 设置 Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
@@ -27,11 +22,12 @@ jobs:
           playwright install chromium
           playwright install-deps chromium
       
-      - name: 运行续订脚本
+      - name: 运行续订
         env:
           KATA_EMAIL: ${{ secrets.KATA_EMAIL }}
           KATA_PASSWORD: ${{ secrets.KATA_PASSWORD }}
           KATA_SERVER_ID: ${{ secrets.KATA_SERVER_ID }}
+          CAPSOLVER_KEY: ${{ secrets.CAPSOLVER_KEY }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           SCREENSHOT_DIR: /tmp
@@ -41,7 +37,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshots
+          name: screenshots-${{ github.run_number }}
           path: /tmp/*.png
-          retention-days: 7
+          retention-days: 3
           if-no-files-found: ignore
