@@ -18,7 +18,7 @@ import aiohttp
 import re
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
-DEFAULT_SERVER_URL = "https://hub.weirdhost.xyz/server/734ad0d1"
+DEFAULT_SERVER_URL = "https://hub.weirdhost.xyz/server/d341874c"
 DEFAULT_COOKIE_NAME = "remember_web"
 
 # ------------------ Telegram 通知函数 ------------------
