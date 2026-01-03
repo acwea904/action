@@ -1,7 +1,7 @@
 name: 韩国鸡自动续订
 on:
   schedule:
-    - cron: '07 21 */5 * *'  # 每5天 UTC 21点37分
+    - cron: '07 21 */5 * *'  # 每5天 UTC 21点07分
   workflow_dispatch:      # 支持手动触发
 
 jobs:
@@ -20,24 +20,30 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt || pip install playwright aiohttp
-          # Install Playwright browsers (with necessary deps)
+          pip install playwright aiohttp pynacl
           playwright install --with-deps chromium
 
       - name: Run weirdhost-auto
         env:
-          # 优先 Cookie 登录（可选）
-          REMEMBER_WEB_COOKIE: ${{ secrets.REMEMBER_WEB_COOKIE }}           # optional: cookie value
-          REMEMBER_WEB_COOKIE_NAME: ${{ secrets.REMEMBER_WEB_COOKIE_NAME }} # optional: cookie name, default 'remember_web'
-          # 回退登录用的邮箱/密码（当 cookie 无效时使用）
-          PTERODACTYL_EMAIL: ${{ secrets.PTERODACTYL_EMAIL }}
-          PTERODACTYL_PASSWORD: ${{ secrets.PTERODACTYL_PASSWORD }}
-          # 目标服务器（可选，脚本有默认值）
+          # Cookie 登录
+          REMEMBER_WEB_COOKIE: ${{ secrets.REMEMBER_WEB_COOKIE }}
+          REMEMBER_WEB_COOKIE_NAME: ${{ secrets.REMEMBER_WEB_COOKIE_NAME }}
+          # 目标服务器
           SERVER_URL: ${{ secrets.SERVER_URL }}
           # Telegram 通知
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          # 若将来使用打码服务，可在此加入 API key
-          # TWOCAPTCHA_API_KEY: ${{ secrets.TWOCAPTCHA_API_KEY }}
+          # 自动更新 Cookie 到 Secrets
+          REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           python scripts/weirdhost_renew.py
+
+      - name: 清理工作流记录
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          delete_workflow_pattern: ${{ github.workflow }}
+          retain_days: 0
+          keep_minimum_runs: 3
