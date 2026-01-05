@@ -7,7 +7,7 @@ Castle-Host 服务器自动续约脚本
 配置变量说明:
 - 账号变量:
     - CASTLE_COOKIES=格式：PHPSESSID=ohxxxxxks5q; uid=R0RsTHxxxxx25b
-    - SERVER_ID=服务器 ID 默认：117954 
+    - SERVER_ID=服务器 ID 默认：117987
 - GITHUB Token:
     - REPO_TOKEN=ghp_xxxxx 用于自动更新 Cookie
 - 通知变量 (可选):
@@ -33,7 +33,7 @@ from playwright.async_api import async_playwright, BrowserContext, Page
 
 LOG_FILE = "castle_renew.log"
 HISTORY_FILE = "renewal_history.json"
-DEFAULT_SERVER_ID = "117954"
+DEFAULT_SERVER_ID = "117987"
 REQUEST_TIMEOUT = 10
 PAGE_TIMEOUT = 60000
 
@@ -108,7 +108,7 @@ class Config:
 # ==================== 工具函数 ====================
 
 def mask_id(server_id: str) -> str:
-    """隐藏ID用于日志: 117954 -> 1***54"""
+    """隐藏ID用于日志: 117987 -> 1***54"""
     if len(server_id) <= 3:
         return server_id
     return f"{server_id[0]}***{server_id[-2:]}"
