@@ -3,7 +3,7 @@
 """
 Castle-Host 服务器自动续约脚本 (增强版)
 兼容 Playwright 1.48.0+ 版本
-修复：text_content() 必须传入 selector 参数的问题
+优化：改进页面文本检测逻辑，避免误判
 """
 
 import os
@@ -265,7 +265,7 @@ def calculate_date_difference(date1_str, date2_str):
 
 # ------------------ 续约执行 ------------------
 async def perform_renewal(page, server_id):
-    """执行续约操作"""
+    """执行续约操作（优化检测逻辑）"""
     logger.info(f"🔄 开始续约流程，服务器ID: {server_id}")
     
     try:
@@ -325,43 +325,74 @@ async def perform_renewal(page, server_id):
                 # 等待可能的弹窗或提示
                 await page.wait_for_timeout(3000)
                 
-                # 检查是否有成功提示
-                success_indicators = [
-                    "успех", "success", "продлен", "renewed", "续约成功",
-                    "Сервер продлен", "Server renewed"
+                # ✅ 优化后的检测逻辑（解决同时出现success和ошибка的问题）
+                page_text = await page.text_content('body')
+                
+                # 1. 精准检测明确的续约失败短语（只有匹配这些才立刻判定失败）
+                critical_error_phrases = [
+                    "Уже продлен",               # 已续约
+                    "Already renewed",          # 已续约
+                    "Недостаточно средств",     # 余额不足
+                    "Insufficient funds",       # 余额不足
+                    "Ошибка продления",         # 续约错误（明确的错误）
+                    "Renewal error",            # 续约错误
+                    "Не удалось продлить",      # 续约失败
+                    "Failed to renew",          # 续约失败
+                    "Максимальный срок",        # 达到最大期限
+                    "Maximum period"            # 达到最大期限
                 ]
                 
-                page_text = await page.text_content('body')
-                for indicator in success_indicators:
-                    if indicator.lower() in page_text.lower():
-                        logger.info(f"✅ 检测到成功提示: {indicator}")
-                        request_success = True
+                for phrase in critical_error_phrases:
+                    if phrase in page_text:
+                        logger.error(f"❌ 检测到明确的续约失败信息: {phrase}")
+                        return False  # 只有这些明确错误才立即终止
+                
+                # 2. 检测强成功指示
+                strong_success_phrases = [
+                    "Сервер продлен",           # 服务器已续约
+                    "Server renewed",           # 服务器已续约
+                    "продлен успешно",          # 成功续约
+                    "renewed successfully",     # 成功续约
+                    "успешно продлен"           # 成功续约
+                ]
+                
+                success_detected = False
+                for phrase in strong_success_phrases:
+                    if phrase in page_text:
+                        logger.info(f"✅ 检测到明确的续约成功信息: {phrase}")
+                        success_detected = True
                         break
                 
-                # 检查是否有错误提示
-                error_indicators = [
-                    "ошибка", "error", "失败", "не удалось",
-                    "Уже продлен", "Already renewed",
-                    "Недостаточно средств", "Insufficient funds"
-                ]
+                # 3. 弱成功指示（通用词，可能在页面其他地方出现）
+                weak_success_indicators = ["успех", "success"]
+                weak_error_indicators = ["ошибка", "error", "失败"]
                 
-                for indicator in error_indicators:
-                    if indicator.lower() in page_text.lower():
-                        logger.warning(f"⚠️ 检测到错误提示: {indicator}")
-                        return False
+                # 统计弱指示的出现
+                weak_success_count = sum(1 for indicator in weak_success_indicators if indicator.lower() in page_text.lower())
+                weak_error_count = sum(1 for indicator in weak_error_indicators if indicator.lower() in page_text.lower())
+                
+                if weak_success_count > 0:
+                    logger.info(f"ℹ️ 检测到通用成功词出现 {weak_success_count} 次")
+                if weak_error_count > 0:
+                    logger.info(f"ℹ️ 检测到通用错误词出现 {weak_error_count} 次")
+                
+                # 4. 智能决策逻辑
+                if request_sent and request_success:
+                    # 最重要的指标：HTTP请求成功发送且返回200
+                    logger.info("✅ 续约请求已成功发送（HTTP 200），继续验证结果")
+                    return True
+                elif success_detected:
+                    logger.info("✅ 检测到明确成功短语，继续验证结果")
+                    return True
+                elif request_sent and not request_success:
+                    logger.error("❌ 续约请求发送失败")
+                    return False
+                else:
+                    # 没有明确结果，但也没有检测到关键错误 -> 继续验证
+                    logger.warning("⚠️ 没有检测到明确结果，继续执行结果验证")
+                    return True
                 
                 button_found = True
-                
-                if request_sent and request_success:
-                    logger.info("✅ 续约请求发送成功")
-                    return True
-                elif request_success:
-                    logger.info("✅ 续约可能成功（有成功提示）")
-                    return True
-                else:
-                    logger.warning("⚠️ 续约状态不确定")
-                    return True  # 假设成功，继续验证
-                
                 break
         
         if not button_found:
@@ -445,7 +476,7 @@ async def main():
     """主执行函数"""
     logger.info("=" * 60)
     logger.info("Castle-Host 服务器自动续约脚本 (增强版)")
-    logger.info("兼容 Playwright 1.48.0+ 版本")
+    logger.info("优化检测逻辑，避免误判")
     logger.info("=" * 60)
     
     # 获取环境变量
@@ -538,6 +569,8 @@ async def main():
                     days = int(days_until_expiry)
                     if days > 3:
                         logger.info(f"ℹ️ 距离到期还有 {days} 天，无需立即续约")
+                    else:
+                        logger.info(f"⚠️ 距离到期仅剩 {days} 天，执行续约")
                 except:
                     pass
             
@@ -670,8 +703,7 @@ async def main():
 if __name__ == "__main__":
     print("=" * 60)
     print("Castle-Host 服务器自动续约脚本 (增强版)")
-    print("兼容 Playwright 1.48.0+ 版本")
-    print("修复了 text_content() API 兼容性问题")
+    print("优化检测逻辑，避免误判")
     print("=" * 60)
     
     # 检查环境变量
