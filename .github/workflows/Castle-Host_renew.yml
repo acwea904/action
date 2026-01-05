@@ -52,14 +52,3 @@ jobs:
           delete_workflow_pattern: ${{ github.workflow }}
           retain_days: 0
           keep_minimum_runs: 3
-
-      - name: Upload logs and screenshots
-        if: always()  # 无论成功失败都上传
-        uses: actions/upload-artifact@v4
-        with:
-          name: renewal-artifacts-${{ github.run_id }}
-          path: |
-            *.log
-            *.png
-            *.json
-          retention-days: 7
