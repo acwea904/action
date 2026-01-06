@@ -252,7 +252,6 @@ async def add_server_time():
             extra_http_headers={'Accept-Language': 'zh-CN,zh;q=0.9'}
         )
         
-        # 规避检测
         await context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => false});
             Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
@@ -286,7 +285,7 @@ async def add_server_time():
             print(f"🌐 访问: {server_url}")
             await page.goto(server_url, timeout=90000)
             await wait_for_cloudflare(page, max_wait=120)
-            await page.wait_for_load_state("networkidle", timeout=30000)
+            await page.wait_for_timeout(2000)
             await wait_for_page_ready(page, max_wait=20)
 
             if "/auth/login" in page.url or "/login" in page.url:
@@ -317,8 +316,6 @@ async def add_server_time():
             await add_button.click()
             print("🔄 第一次点击完成，等待 CF 验证...")
 
-            
-
             await page.wait_for_timeout(5000)
             cf_passed = await wait_for_cloudflare(page, max_wait=120)
             
@@ -329,8 +326,13 @@ async def add_server_time():
                 return
 
             print("⏳ 等待页面恢复...")
-            await page.wait_for_load_state("networkidle", timeout=30000)
-            await wait_for_page_ready(page, max_wait=20)
+            await page.wait_for_timeout(3000)
+            
+            # 等待按钮出现而不是 networkidle
+            try:
+                await page.wait_for_selector('button', timeout=10000)
+            except:
+                pass
             await page.wait_for_timeout(2000)
 
             print("\n" + "="*50)
@@ -342,8 +344,11 @@ async def add_server_time():
                 print("⚠️ 未找到按钮，刷新页面...")
                 await page.reload()
                 await wait_for_cloudflare(page, max_wait=30)
-                await page.wait_for_load_state("networkidle", timeout=30000)
-                await wait_for_page_ready(page, max_wait=15)
+                await page.wait_for_timeout(2000)
+                try:
+                    await page.wait_for_selector('button', timeout=10000)
+                except:
+                    pass
                 add_button = await find_renew_button(page)
 
             if not add_button:
@@ -373,7 +378,7 @@ async def add_server_time():
                     await page.wait_for_timeout(2000)
                     await page.reload()
                     await wait_for_cloudflare(page, max_wait=30)
-                    await page.wait_for_load_state("networkidle", timeout=30000)
+                    await page.wait_for_timeout(2000)
                     new_expiry = await get_expiry_time(page)
                     new_remaining = calculate_remaining_time(new_expiry)
                     
