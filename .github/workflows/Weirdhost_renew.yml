@@ -1,4 +1,4 @@
-name: 韩国鸡自动续订
+name: Weirdhost续订
 on:
   schedule:
     - cron: '18 4 * * *'  # 每天北京时间 12:18 运行
