@@ -1,4 +1,4 @@
-name: Castle HOST 自动续约
+name: Castle HOST 续约
 
 on:
   schedule:
