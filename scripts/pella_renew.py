@@ -18,6 +18,7 @@ import time
 import logging
 import re
 import requests
+from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -53,12 +54,19 @@ def mask_url(url):
     return url
 
 
+def escape_html(text):
+    """转义HTML特殊字符"""
+    if not text:
+        return ""
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
 class PellaAutoRenew:
     LOGIN_URL = "https://www.pella.app/login"
     HOME_URL = "https://www.pella.app/home"
     RENEW_WAIT_TIME = 8
     WAIT_TIME_AFTER_LOGIN = 20
-    RESTART_WAIT_TIME = 60  # 等待重启完成的最大时间
+    RESTART_WAIT_TIME = 60
 
     def __init__(self, email, password):
         self.email = email
@@ -66,7 +74,7 @@ class PellaAutoRenew:
         self.initial_expiry_details = "N/A"
         self.initial_expiry_value = -1.0
         self.server_url = None
-        self.restart_output = ""  # 存储重启输出
+        self.restart_output = ""
         
         if not self.email or not self.password:
             raise ValueError("邮箱和密码不能为空")
@@ -199,7 +207,6 @@ class PellaAutoRenew:
                 arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
             """, element, value)
         
-        # 输入邮箱
         try:
             email_input = self.wait_for_element_present(By.CSS_SELECTOR, "input[name='identifier']", 15)
             js_set_value(email_input, self.email)
@@ -210,7 +217,6 @@ class PellaAutoRenew:
         except Exception as e:
             raise Exception(f"❌ 输入邮箱失败: {e}")
             
-        # 点击继续
         try:
             time.sleep(1)
             if not self.find_and_click_button():
@@ -228,7 +234,6 @@ class PellaAutoRenew:
         except Exception as e:
             raise Exception(f"❌ 第一步失败: {e}")
 
-        # 输入密码
         try:
             password_input = self.wait_for_element_present(By.CSS_SELECTOR, "input[type='password']", 10)
             js_set_value(password_input, self.password)
@@ -236,7 +241,6 @@ class PellaAutoRenew:
         except Exception as e:
             raise Exception(f"❌ 输入密码失败: {e}")
 
-        # 提交登录
         try:
             time.sleep(2)
             if not self.find_and_click_button():
@@ -244,7 +248,6 @@ class PellaAutoRenew:
         except Exception as e:
             raise Exception(f"❌ 点击登录失败: {e}")
 
-        # 验证登录
         try:
             for _ in range(self.WAIT_TIME_AFTER_LOGIN // 2):
                 time.sleep(2)
@@ -352,23 +355,17 @@ class PellaAutoRenew:
         
         logger.info("🔄 开始重启服务器...")
         
-        # 确保在服务器页面
         if '/server/' not in self.driver.current_url:
             self.driver.get(self.server_url)
             time.sleep(3)
         
         try:
-            # 查找并点击 RESTART 按钮
             restart_btn = None
-            
-            # 尝试多种方式查找 RESTART 按钮
             selectors = [
                 "//button[contains(text(), 'RESTART')]",
                 "//button[.//text()[contains(., 'RESTART')]]",
-                "//button[contains(@class, 'bg-brand-light-gray')]//parent::button[contains(., 'RESTART')]",
             ]
             
-            # 使用 XPath 查找包含 RESTART 文本的按钮
             for sel in selectors:
                 try:
                     restart_btn = WebDriverWait(self.driver, 5).until(
@@ -379,7 +376,6 @@ class PellaAutoRenew:
                 except:
                     continue
             
-            # 如果上面的方法都失败，尝试查找所有按钮
             if not restart_btn:
                 buttons = self.driver.find_elements(By.TAG_NAME, "button")
                 for btn in buttons:
@@ -394,13 +390,11 @@ class PellaAutoRenew:
                 logger.warning("⚠️ 未找到 RESTART 按钮")
                 return False, ""
             
-            # 滚动到按钮位置并点击
             self.driver.execute_script("arguments[0].scrollIntoView(true);", restart_btn)
             time.sleep(0.5)
             self.driver.execute_script("arguments[0].click();", restart_btn)
             logger.info("✅ 已点击 RESTART 按钮")
             
-            # 等待输出完成
             output = self._wait_for_restart_output()
             self.restart_output = output
             
@@ -425,32 +419,26 @@ class PellaAutoRenew:
         
         while time.time() - start_time < self.RESTART_WAIT_TIME:
             try:
-                # 查找输出容器 - pre 元素
                 pre_elements = self.driver.find_elements(By.CSS_SELECTOR, "pre.bg-black, pre[class*='bg-black']")
                 
                 if not pre_elements:
-                    # 尝试其他选择器
                     pre_elements = self.driver.find_elements(By.TAG_NAME, "pre")
                 
                 current_output = ""
                 for pre in pre_elements:
                     try:
-                        # 获取 pre 内所有 div 的文本
                         divs = pre.find_elements(By.TAG_NAME, "div")
                         for div in divs:
                             text = div.text.strip()
-                            if text and text != "Copy":  # 排除复制按钮
+                            if text and text != "Copy":
                                 current_output += text + "\n"
                         
-                        # 如果没有 div，直接获取 pre 的文本
                         if not current_output:
                             current_output = pre.text
                     except:
                         continue
                 
-                # 检查是否包含完成标志
                 if current_output:
-                    # 检查是否完成
                     completion_markers = [
                         "App is running",
                         "Thank you for using this script",
@@ -459,7 +447,6 @@ class PellaAutoRenew:
                     
                     is_complete = any(marker in current_output for marker in completion_markers)
                     
-                    # 检查输出是否稳定（连续3次相同）
                     if current_output == last_output:
                         stable_count += 1
                     else:
@@ -467,7 +454,6 @@ class PellaAutoRenew:
                         last_output = current_output
                     
                     if is_complete and stable_count >= 2:
-                        # 清理输出
                         return self._clean_output(current_output)
                 
                 time.sleep(2)
@@ -476,7 +462,6 @@ class PellaAutoRenew:
                 logger.debug(f"获取输出时出错: {e}")
                 time.sleep(2)
         
-        # 超时返回最后获取的输出
         if last_output:
             return self._clean_output(last_output)
         return ""
@@ -491,10 +476,8 @@ class PellaAutoRenew:
         
         for line in lines:
             line = line.strip()
-            # 跳过空行和复制按钮文本
             if not line or line == "Copy":
                 continue
-            # 清理 ANSI 转义序列
             line = re.sub(r'\[\d+;\d+H|\[\d+J|\[0J', '', line)
             cleaned_lines.append(line)
         
@@ -508,7 +491,6 @@ class PellaAutoRenew:
                 result = self.renew_server()
                 logger.info(f"续期结果: {result}")
                 
-                # 执行重启
                 restart_success, restart_output = self.restart_server()
                 
                 return True, result, restart_output
@@ -554,65 +536,55 @@ class MultiAccountManager:
         raise ValueError("❌ 未找到账号配置")
     
     def send_notification(self, results):
+        """发送通知 - 简洁摘要 + 可展开详情"""
         if not self.tg_token or not self.tg_chat:
             return
         
         try:
-            msg = f"🎁 Pella续期 ({len(results)}个账号)\n\n"
+            # 构建简洁的摘要消息
+            msg = f"🎁 <b>Pella 续期报告</b>\n"
+            msg += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+            msg += "━" * 18 + "\n\n"
             
-            for email, _, result, restart_output in results:
+            for email, success, result, restart_output in results:
+                # 状态图标
                 if "成功" in result:
                     status = "✅"
                 elif "已续期" in result:
                     status = "📅"
                 else:
                     status = "❌"
-                msg += f"{status} {mask_email(email)}: {result[:50]}\n"
                 
-                # 添加重启输出（如果有）
+                msg += f"{status} <b>{escape_html(mask_email(email))}</b>\n"
+                msg += f"├ 续期: {escape_html(result)}\n"
+                
+                # 重启状态简单显示
                 if restart_output:
-                    msg += f"\n🔄 重启输出:\n```\n{restart_output[:3000]}\n```\n"
-            
-            # Telegram 消息长度限制 4096
-            if len(msg) > 4000:
-                # 发送摘要消息
-                summary_msg = f"🎁 Pella续期 ({len(results)}个账号)\n\n"
-                for email, _, result, _ in results:
-                    if "成功" in result:
-                        status = "✅"
-                    elif "已续期" in result:
-                        status = "📅"
+                    # 简单判断是否成功
+                    if "App is running" in restart_output or "running" in restart_output.lower():
+                        msg += f"└ 重启: ✅ 完成\n"
                     else:
-                        status = "❌"
-                    summary_msg += f"{status} {mask_email(email)}: {result[:50]}\n"
+                        msg += f"└ 重启: ⚠️ 未确认\n"
+                    
+                    # 完整输出用 spoiler 隐藏，限制长度
+                    output_preview = restart_output[:2000] if len(restart_output) > 2000 else restart_output
+                    msg += f"\n<b>📜 重启日志</b> <i>(点击展开)</i>\n"
+                    msg += f"<tg-spoiler><code>{escape_html(output_preview)}</code></tg-spoiler>\n"
+                else:
+                    msg += f"└ 重启: ⚠️ 无输出\n"
                 
-                requests.post(
-                    f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
-                    data={"chat_id": self.tg_chat, "text": summary_msg},
-                    timeout=10
-                )
-                
-                # 分别发送每个账号的重启输出
-                for email, _, _, restart_output in results:
-                    if restart_output:
-                        output_msg = f"🔄 {mask_email(email)} 重启输出:\n```\n{restart_output[:3500]}\n```"
-                        requests.post(
-                            f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
-                            data={
-                                "chat_id": self.tg_chat, 
-                                "text": output_msg,
-                                "parse_mode": "Markdown"
-                            },
-                            timeout=10
-                        )
-                        time.sleep(0.5)
+                msg += "\n"
+            
+            # 检查消息长度，Telegram 限制 4096
+            if len(msg) > 4000:
+                self._send_split_notification(results)
             else:
                 requests.post(
                     f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
                     data={
-                        "chat_id": self.tg_chat, 
+                        "chat_id": self.tg_chat,
                         "text": msg,
-                        "parse_mode": "Markdown"
+                        "parse_mode": "HTML"
                     },
                     timeout=10
                 )
@@ -620,6 +592,56 @@ class MultiAccountManager:
             logger.info("✅ 通知已发送")
         except Exception as e:
             logger.error(f"❌ 通知失败: {e}")
+    
+    def _send_split_notification(self, results):
+        """消息过长时分开发送"""
+        # 先发送摘要
+        summary = f"🎁 <b>Pella 续期报告</b>\n"
+        summary += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+        summary += "━" * 18 + "\n\n"
+        
+        for email, success, result, restart_output in results:
+            if "成功" in result:
+                status = "✅"
+            elif "已续期" in result:
+                status = "📅"
+            else:
+                status = "❌"
+            
+            summary += f"{status} {escape_html(mask_email(email))}\n"
+            summary += f"   {escape_html(result)}\n"
+            
+            if restart_output and ("App is running" in restart_output or "running" in restart_output.lower()):
+                summary += f"   🔄 重启完成\n"
+            summary += "\n"
+        
+        requests.post(
+            f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
+            data={
+                "chat_id": self.tg_chat,
+                "text": summary,
+                "parse_mode": "HTML"
+            },
+            timeout=10
+        )
+        
+        # 分别发送每个账号的详细日志
+        for email, _, _, restart_output in results:
+            if restart_output:
+                output_preview = restart_output[:3500] if len(restart_output) > 3500 else restart_output
+                detail = f"📋 <b>{escape_html(mask_email(email))}</b> 重启日志\n\n"
+                detail += f"<tg-spoiler><code>{escape_html(output_preview)}</code></tg-spoiler>"
+                
+                requests.post(
+                    f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
+                    data={
+                        "chat_id": self.tg_chat,
+                        "text": detail,
+                        "parse_mode": "HTML"
+                    },
+                    timeout=10
+                )
+                time.sleep(0.3)
     
     def run_all(self):
         results = []
