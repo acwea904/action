@@ -1,7 +1,9 @@
 name: Weirdhost续订
 on:
   schedule:
-    - cron: '18 4 * * *'  # 每天北京时间 12:18 运行
+    - cron: '15 4 * * *'  # 每天北京时间 12:15 运行
+    - cron: '15 5 * * *'  # 每天北京时间 13:15 运行
+    - cron: '15 16 * * *'  # 每天北京时间 00:15 运行
   workflow_dispatch:      # 支持手动触发
 
 jobs:
