@@ -54,11 +54,14 @@ def mask_url(url):
     return url
 
 
-def escape_html(text):
-    """转义HTML特殊字符"""
+def escape_markdown_v2(text):
+    """转义 MarkdownV2 特殊字符"""
     if not text:
         return ""
-    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
 
 
 class PellaAutoRenew:
@@ -536,112 +539,113 @@ class MultiAccountManager:
         raise ValueError("❌ 未找到账号配置")
     
     def send_notification(self, results):
-        """发送通知 - 简洁摘要 + 可展开详情"""
+        """发送通知 - 每个账号单独一条消息"""
         if not self.tg_token or not self.tg_chat:
             return
         
-        try:
-            # 构建简洁的摘要消息
-            msg = f"🎁 <b>Pella 续期报告</b>\n"
-            msg += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-            msg += "━" * 18 + "\n\n"
-            
-            for email, success, result, restart_output in results:
-                # 状态图标
-                if "成功" in result:
-                    status = "✅"
-                elif "已续期" in result:
-                    status = "📅"
-                else:
-                    status = "❌"
-                
-                msg += f"{status} <b>{escape_html(mask_email(email))}</b>\n"
-                msg += f"├ 续期: {escape_html(result)}\n"
-                
-                # 重启状态简单显示
-                if restart_output:
-                    # 简单判断是否成功
-                    if "App is running" in restart_output or "running" in restart_output.lower():
-                        msg += f"└ 重启: ✅ 完成\n"
-                    else:
-                        msg += f"└ 重启: ⚠️ 未确认\n"
-                    
-                    # 完整输出用 spoiler 隐藏，限制长度
-                    output_preview = restart_output[:2000] if len(restart_output) > 2000 else restart_output
-                    msg += f"\n<b>📜 重启日志</b> <i>(点击展开)</i>\n"
-                    msg += f"<tg-spoiler><code>{escape_html(output_preview)}</code></tg-spoiler>\n"
-                else:
-                    msg += f"└ 重启: ⚠️ 无输出\n"
-                
-                msg += "\n"
-            
-            # 检查消息长度，Telegram 限制 4096
-            if len(msg) > 4000:
-                self._send_split_notification(results)
-            else:
-                requests.post(
-                    f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
-                    data={
-                        "chat_id": self.tg_chat,
-                        "text": msg,
-                        "parse_mode": "HTML"
-                    },
-                    timeout=10
-                )
-            
-            logger.info("✅ 通知已发送")
-        except Exception as e:
-            logger.error(f"❌ 通知失败: {e}")
-    
-    def _send_split_notification(self, results):
-        """消息过长时分开发送"""
-        # 先发送摘要
-        summary = f"🎁 <b>Pella 续期报告</b>\n"
-        summary += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-        summary += "━" * 18 + "\n\n"
-        
         for email, success, result, restart_output in results:
+            try:
+                self._send_single_notification(email, success, result, restart_output)
+                time.sleep(0.5)  # 避免发送过快
+            except Exception as e:
+                logger.error(f"❌ 发送 {mask_email(email)} 通知失败: {e}")
+    
+    def _send_single_notification(self, email, success, result, restart_output):
+        """发送单个账号的通知"""
+        try:
+            # 单独发送，日志可以更长
+            max_log_length = 3000
+            
             if "成功" in result:
-                status = "✅"
+                status = "📅"
             elif "已续期" in result:
                 status = "📅"
             else:
                 status = "❌"
             
-            summary += f"{status} {escape_html(mask_email(email))}\n"
-            summary += f"   {escape_html(result)}\n"
+            msg = f"🎁 *Pella 续期报告*\n"
+            msg += f"⏰ {escape_markdown_v2(datetime.now().strftime('%Y-%m-%d %H:%M'))}\n"
+            msg += escape_markdown_v2("━" * 18) + "\n\n"
             
-            if restart_output and ("App is running" in restart_output or "running" in restart_output.lower()):
-                summary += f"   🔄 重启完成\n"
-            summary += "\n"
-        
-        requests.post(
-            f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
-            data={
-                "chat_id": self.tg_chat,
-                "text": summary,
-                "parse_mode": "HTML"
-            },
-            timeout=10
-        )
-        
-        # 分别发送每个账号的详细日志
-        for email, _, _, restart_output in results:
+            msg += f"{status} *{escape_markdown_v2(email)}*\n"
+            msg += f"├ 续期: {escape_markdown_v2(result)}\n"
+            
             if restart_output:
-                output_preview = restart_output[:3500] if len(restart_output) > 3500 else restart_output
-                detail = f"📋 <b>{escape_html(mask_email(email))}</b> 重启日志\n\n"
-                detail += f"<tg-spoiler><code>{escape_html(output_preview)}</code></tg-spoiler>"
+                if "App is running" in restart_output or "running" in restart_output.lower():
+                    msg += f"└ 重启: ✅ 完成\n"
+                else:
+                    msg += f"└ 重启: ⚠️ 未确认\n"
                 
-                requests.post(
-                    f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
-                    data={
-                        "chat_id": self.tg_chat,
-                        "text": detail,
-                        "parse_mode": "HTML"
-                    },
-                    timeout=10
-                )
-                time.sleep(0.3)
+                log_text = restart_output[:max_log_length]
+                if len(restart_output) > max_log_length:
+                    log_text += "\n... (已截断)"
+                
+                msg += f"📜 重启日志 \\(点击展开\\)\n"
+                msg += f"||{escape_markdown_v2(log_text)}||\n"
+            else:
+                msg += f"└ 重启: ⚠️ 无输出\n"
+            
+            response = requests.post(
+                f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
+                data={
+                    "chat_id": self.tg_chat,
+                    "text": msg,
+                    "parse_mode": "MarkdownV2"
+                },
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"✅ {mask_email(email)} 通知已发送")
+            else:
+                logger.warning(f"⚠️ MarkdownV2 发送失败，尝试纯文本")
+                self._send_single_plain(email, result, restart_output)
+                
+        except Exception as e:
+            logger.error(f"❌ 通知失败: {e}")
+            self._send_single_plain(email, result, restart_output)
+    
+    def _send_single_plain(self, email, result, restart_output):
+        """备用：发送单个账号的纯文本通知"""
+        try:
+            max_log_length = 3000
+            
+            if "成功" in result:
+                status = "📅"
+            elif "已续期" in result:
+                status = "📅"
+            else:
+                status = "❌"
+            
+            msg = f"🎁 Pella 续期报告\n"
+            msg += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+            msg += "━" * 18 + "\n\n"
+            
+            msg += f"{status} {email}\n"
+            msg += f"├ 续期: {result}\n"
+            
+            if restart_output:
+                if "App is running" in restart_output:
+                    msg += f"└ 重启: ✅ 完成\n"
+                else:
+                    msg += f"└ 重启: ⚠️ 未确认\n"
+                
+                log_text = restart_output[:max_log_length]
+                if len(restart_output) > max_log_length:
+                    log_text += "\n... (已截断)"
+                msg += f"📜 重启日志 (点击展开)\n{log_text}\n"
+            else:
+                msg += f"└ 重启: ⚠️ 无输出\n"
+            
+            requests.post(
+                f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
+                data={"chat_id": self.tg_chat, "text": msg},
+                timeout=10
+            )
+            logger.info(f"✅ {mask_email(email)} 纯文本通知已发送")
+                    
+        except Exception as e:
+            logger.error(f"❌ 纯文本通知也失败: {e}")
     
     def run_all(self):
         results = []
