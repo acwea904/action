@@ -39,6 +39,7 @@ class ServerResult:
     expiry: str = ""
     days: int = 0
     started: bool = False
+    console_log: str = ""  # 新增：控制台日志
 
 @dataclass
 class Config:
@@ -187,7 +188,23 @@ class CastleClient:
             logger.error(f"❌ 获取服务器ID失败: {e}")
         return []
     
-    async def start_if_stopped(self, sid: str) -> bool:
+    async def get_console_log(self, sid: str) -> str:
+        """获取服务器控制台日志"""
+        try:
+            await self.page.goto(f"{self.base}/servers/console/index/{sid}", wait_until="networkidle")
+            await self.page.wait_for_timeout(3000)
+            
+            console = self.page.locator("#console_data")
+            if await console.count() > 0:
+                log = await console.text_content() or ""
+                logger.info(f"📜 获取到控制台日志 ({len(log)} 字符)")
+                return log
+        except Exception as e:
+            logger.error(f"❌ 获取控制台日志失败: {e}")
+        return ""
+    
+    async def start_if_stopped(self, sid: str) -> Tuple[bool, str]:
+        """启动服务器，返回(是否启动, 控制台日志)"""
         masked = mask_id(sid)
         try:
             if "/servers" not in self.page.url:
@@ -198,11 +215,14 @@ class CastleClient:
                 await btn.click()
                 await self.page.wait_for_timeout(5000)
                 logger.info(f"🟢 服务器 {masked} 已启动")
-                return True
+                
+                # 获取控制台日志
+                log = await self.get_console_log(sid)
+                return True, log
             logger.info(f"✅ 服务器 {masked} 运行中")
         except Exception as e:
             logger.error(f"❌ 启动服务器失败: {e}")
-        return False
+        return False, ""
     
     async def get_expiry(self, sid: str) -> str:
         try:
@@ -263,8 +283,8 @@ class CastleClient:
         except:
             return None
 
-async def process_account(cookie_str: str, idx: int, config: Config, notifier: Notifier) -> Tuple[Optional[str], List[Tuple[str, int]]]:
-    """返回(新Cookie, [(服务器ID, 消息ID)])"""
+async def process_account(cookie_str: str, idx: int, config: Config, notifier: Notifier) -> Tuple[Optional[str], List[Tuple[str, int, str]]]:
+    """返回(新Cookie, [(服务器ID, 消息ID, 控制台日志)])"""
     cookies = parse_cookies(cookie_str)
     if not cookies:
         logger.error(f"❌ 账号#{idx+1} Cookie解析失败")
@@ -273,7 +293,7 @@ async def process_account(cookie_str: str, idx: int, config: Config, notifier: N
     logger.info(f"{'='*50}")
     logger.info(f"📌 处理账号 #{idx+1}")
     
-    started_servers: List[Tuple[str, int]] = []
+    started_servers: List[Tuple[str, int, str]] = []  # (服务器ID, 消息ID, 日志)
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
@@ -297,13 +317,18 @@ async def process_account(cookie_str: str, idx: int, config: Config, notifier: N
             
             for sid in server_ids:
                 logger.info(f"--- 处理服务器 {mask_id(sid)} ---")
-                started = await client.start_if_stopped(sid)
+                
+                # 启动并获取日志
+                started, console_log = await client.start_if_stopped(sid)
+                
                 expiry = await client.get_expiry(sid)
                 d = days_left(expiry)
                 logger.info(f"📅 到期: {convert_date(expiry)} ({d}天)")
+                
                 status, msg = await client.renew(sid)
                 logger.info(f"📝 结果: {msg}")
-                results.append(ServerResult(sid, status, msg, expiry, d, started))
+                
+                results.append(ServerResult(sid, status, msg, expiry, d, started, console_log))
                 await asyncio.sleep(2)
             
             # 发送通知
@@ -327,9 +352,9 @@ async def process_account(cookie_str: str, idx: int, config: Config, notifier: N
 {started_line}{stat}"""
                 message_id = await notifier.send(msg)
                 
-                # 启动的服务器记录消息ID，用于回复文件
+                # 启动的服务器记录消息ID和日志
                 if r.started and message_id:
-                    started_servers.append((r.server_id, message_id))
+                    started_servers.append((r.server_id, message_id, r.console_log))
             
             new_cookie = await client.extract_cookies()
             if new_cookie and new_cookie != cookie_str:
@@ -362,7 +387,7 @@ async def main():
     
     new_cookies = []
     changed = False
-    all_started: List[Tuple[str, int]] = []
+    all_started: List[Tuple[str, int, str]] = []
     
     for i, cookie in enumerate(config.cookies_list):
         new, started = await process_account(cookie, i, config, notifier)
@@ -376,14 +401,17 @@ async def main():
         if i < len(config.cookies_list) - 1:
             await asyncio.sleep(5)
     
-    # 对每个启动的服务器，回复txt文件到对应消息
-    for sid, msg_id in all_started:
+    # 发送控制台日志文件
+    for sid, msg_id, console_log in all_started:
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         content = f"Castle-Host 服务器启动日志\n"
-        content += f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        content += "=" * 50 + "\n\n"
         content += f"服务器ID: {sid}\n"
+        content += f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         content += f"控制面板: https://cp.castle-host.com/servers/control/index/{sid}\n"
+        content += "=" * 50 + "\n\n"
+        content += "【控制台输出】\n"
+        content += console_log if console_log else "(无日志)"
+        
         await notifier.send_file(content, f"castle_{sid}_{ts}.txt", "📜 启动日志", reply_to=msg_id)
     
     if changed:
