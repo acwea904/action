@@ -417,10 +417,9 @@ async def process_account(
         page.set_default_timeout(PAGE_TIMEOUT)
         
         client = CastleHostClient(context, page, config.server_id)
-        new_cookie = None
         
         try:
-            # 先访问控制页检查登录
+            # 1. 先访问控制页检查登录
             await page.goto(client.control_url, wait_until="networkidle")
             
             if "login" in page.url or "auth" in page.url:
@@ -432,24 +431,28 @@ async def process_account(
             
             logger.info("✅ 登录成功")
             
-            # 检查并启动服务器
+            # 2. 先检查并启动服务器（如果关机）
             server_started = await client.check_and_start_server()
+            if server_started:
+                logger.info("⏳ 等待服务器启动...")
+                await asyncio.sleep(5)  # 等待服务器启动
             
-            # 获取服务器信息
+            # 3. 再去支付页获取信息并续约
             server = await client.get_server_info()
+            server_started_flag = server_started  # 保存启动状态
             logger.info(f"📅 到期: {server.expiry_formatted}, ⏳ 剩余: {server.days_left} 天")
             
-            # 执行续期
+            # 4. 执行续期
             result = await client.renew()
-            result.server_started = server_started
+            result.server_started = server_started_flag
             
             # 验证结果
             if result.status in [RenewalStatus.SUCCESS, RenewalStatus.OTHER]:
                 new_expiry, days_added = await client.verify_renewal(server.expiry_date or "")
                 if new_expiry and days_added > 0:
-                    result = RenewalResult(RenewalStatus.SUCCESS, "续约成功", new_expiry, days_added, server_started)
+                    result = RenewalResult(RenewalStatus.SUCCESS, "续约成功", new_expiry, days_added, server_started_flag)
                 elif result.status == RenewalStatus.OTHER:
-                    result = RenewalResult(RenewalStatus.RATE_LIMITED, "今日已续期", server_started=server_started)
+                    result = RenewalResult(RenewalStatus.RATE_LIMITED, "今日已续期", server_started=server_started_flag)
             
             # 发送通知
             message = notifier.build_message(server, result, account_idx)
