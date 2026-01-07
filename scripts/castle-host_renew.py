@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Castle-Host 服务器自动续约脚本
+功能：多账号支持 + 自动启动关机服务器 + Cookie自动更新
+配置变量:
+- CASTLE_COOKIES=PHPSESSID=xxx; uid=xxx,PHPSESSID=xxx; uid=xxx  (多账号用逗号分隔)
+"""
 
 import os
 import sys
