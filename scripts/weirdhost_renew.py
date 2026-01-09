@@ -1,10 +1,31 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import asyncio
+import aiohttp
+import base64
+import re
+import json
+import subprocess
+import tempfile
+from datetime import datetime
+from urllib.parse import urlparse, parse_qs
+from playwright.async_api import async_playwright
+
+try:
+    from nacl import encoding, public
+    NACL_AVAILABLE = True
+except ImportError:
+    NACL_AVAILABLE = False
+
+# 配置
 DEFAULT_SERVER_URL = "https://hub.weirdhost.xyz/server/d341874c"
 DEFAULT_COOKIE_NAME = "remember_web"
 ENABLE_DIRECT = False
 PROXY_LIST_URL = os.environ.get("PROXY_LIST_URL", "")
 VLESS_URI = os.environ.get("VLESS_URI", "")
 XRAY_LOCAL_PORT = 10808
-
 
 def parse_vless_uri(uri: str) -> dict:
     """解析 vless:// URI"""
