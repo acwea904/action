@@ -5,7 +5,6 @@ import os
 import asyncio
 import aiohttp
 import base64
-import re
 import json
 import subprocess
 import tempfile
@@ -19,16 +18,14 @@ try:
 except ImportError:
     NACL_AVAILABLE = False
 
-# 配置
 DEFAULT_SERVER_URL = "https://hub.weirdhost.xyz/server/d341874c"
 DEFAULT_COOKIE_NAME = "remember_web"
 ENABLE_DIRECT = False
-PROXY_LIST_URL = os.environ.get("PROXY_LIST_URL", "")
 VLESS_URI = os.environ.get("VLESS_URI", "")
 XRAY_LOCAL_PORT = 10808
 
+
 def parse_vless_uri(uri: str) -> dict:
-    """解析 vless:// URI"""
     if not uri.startswith("vless://"):
         return None
     try:
@@ -37,7 +34,6 @@ def parse_vless_uri(uri: str) -> dict:
         server = parsed.hostname
         port = parsed.port
         params = parse_qs(parsed.query)
-        
         return {
             "uuid": uuid,
             "server": server,
@@ -56,7 +52,6 @@ def parse_vless_uri(uri: str) -> dict:
 
 
 def generate_xray_config(vless: dict, local_port: int) -> dict:
-    """生成 xray 配置"""
     stream_settings = {"network": vless["type"]}
     
     if vless["security"] == "tls":
@@ -74,32 +69,18 @@ def generate_xray_config(vless: dict, local_port: int) -> dict:
     vnext = {
         "address": vless["server"],
         "port": vless["port"],
-        "users": [{
-            "id": vless["uuid"],
-            "encryption": vless["encryption"],
-        }]
+        "users": [{"id": vless["uuid"], "encryption": vless["encryption"]}]
     }
-    
     if vless["flow"]:
         vnext["users"][0]["flow"] = vless["flow"]
     
     return {
-        "inbounds": [{
-            "port": local_port,
-            "listen": "127.0.0.1",
-            "protocol": "socks",
-            "settings": {"udp": True}
-        }],
-        "outbounds": [{
-            "protocol": "vless",
-            "settings": {"vnext": [vnext]},
-            "streamSettings": stream_settings
-        }]
+        "inbounds": [{"port": local_port, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
+        "outbounds": [{"protocol": "vless", "settings": {"vnext": [vnext]}, "streamSettings": stream_settings}]
     }
 
 
 async def start_xray_client() -> subprocess.Popen:
-    """启动 Xray 客户端"""
     if not VLESS_URI:
         return None
     
@@ -115,44 +96,17 @@ async def start_xray_client() -> subprocess.Popen:
         config_path = f.name
     
     print(f"🚀 启动 Xray 客户端...")
-    
     for xray_path in ["xray", "/usr/local/bin/xray", "/tmp/xray/xray"]:
         try:
-            proc = subprocess.Popen(
-                [xray_path, "run", "-c", config_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
+            proc = subprocess.Popen([xray_path, "run", "-c", config_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             await asyncio.sleep(3)
             if proc.poll() is None:
                 print(f"✅ Xray 已启动，本地端口: {XRAY_LOCAL_PORT}")
                 return proc
         except FileNotFoundError:
             continue
-        except Exception as e:
-            print(f"❌ {xray_path} 启动失败: {e}")
-    
     print("❌ Xray 未安装或启动失败")
     return None
-
-async def fetch_residential_proxies() -> list:
-    proxies = []
-    if not PROXY_LIST_URL:
-        return proxies
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(PROXY_LIST_URL, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    text = await resp.text()
-                    for line in text.split('\n'):
-                        if '[家宽]' in line and line.startswith('socks5://'):
-                            match = re.match(r'(socks5://[\d.]+:\d+)', line)
-                            if match:
-                                proxies.append(match.group(1))
-                    print(f"📡 获取到 {len(proxies)} 个家宽代理")
-    except Exception as e:
-        print(f"⚠️ 获取代理列表失败: {e}")
-    return proxies
 
 
 def calculate_remaining_time(expiry_str: str) -> str:
@@ -202,7 +156,6 @@ def is_cooldown_error(error_detail: str) -> bool:
 async def wait_for_cloudflare(page, max_wait: int = 120) -> bool:
     print("🛡️ 等待 Cloudflare 验证...")
     await page.wait_for_timeout(3000)
-    
     for i in range(max_wait):
         try:
             is_cf = await page.evaluate("""
@@ -262,9 +215,7 @@ async def wait_for_page_ready(page, max_wait: int = 30) -> bool:
                     const buttons = document.querySelectorAll('button');
                     for (const btn of buttons) {
                         const text = btn.innerText || '';
-                        if (text.includes('시간추가') || text.includes('Add Time') || text.includes('Renew')) {
-                            return true;
-                        }
+                        if (text.includes('시간추가') || text.includes('Add Time') || text.includes('Renew')) return true;
                     }
                     const bodyText = document.body.innerText || '';
                     return bodyText.includes('유통기한') || bodyText.includes('Expiry');
@@ -295,22 +246,15 @@ async def update_github_secret(secret_name: str, secret_value: str) -> bool:
     repository = os.environ.get("GITHUB_REPOSITORY", "").strip()
     if not repo_token or not repository or not NACL_AVAILABLE:
         return False
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {repo_token}",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
+    headers = {"Accept": "application/vnd.github+json", "Authorization": f"Bearer {repo_token}", "X-GitHub-Api-Version": "2022-11-28"}
     async with aiohttp.ClientSession() as session:
         try:
-            pk_url = f"https://api.github.com/repos/{repository}/actions/secrets/public-key"
-            async with session.get(pk_url, headers=headers) as resp:
+            async with session.get(f"https://api.github.com/repos/{repository}/actions/secrets/public-key", headers=headers) as resp:
                 if resp.status != 200:
                     return False
                 pk_data = await resp.json()
             encrypted_value = encrypt_secret(pk_data["key"], secret_value)
-            secret_url = f"https://api.github.com/repos/{repository}/actions/secrets/{secret_name}"
-            payload = {"encrypted_value": encrypted_value, "key_id": pk_data["key_id"]}
-            async with session.put(secret_url, headers=headers, json=payload) as resp:
+            async with session.put(f"https://api.github.com/repos/{repository}/actions/secrets/{secret_name}", headers=headers, json={"encrypted_value": encrypted_value, "key_id": pk_data["key_id"]}) as resp:
                 return resp.status in (201, 204)
         except:
             return False
@@ -321,10 +265,9 @@ async def tg_notify(message: str):
     chat_id = os.environ.get("TG_CHAT_ID")
     if not token or not chat_id:
         return
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
     async with aiohttp.ClientSession() as session:
         try:
-            await session.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"})
+            await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"})
         except:
             pass
 
@@ -334,7 +277,6 @@ async def tg_notify_photo(photo_path: str, caption: str = ""):
     chat_id = os.environ.get("TG_CHAT_ID")
     if not token or not chat_id:
         return
-    url = f"https://api.telegram.org/bot{token}/sendPhoto"
     async with aiohttp.ClientSession() as session:
         try:
             with open(photo_path, "rb") as f:
@@ -343,7 +285,7 @@ async def tg_notify_photo(photo_path: str, caption: str = ""):
                 data.add_field("photo", f, filename=os.path.basename(photo_path))
                 data.add_field("caption", caption)
                 data.add_field("parse_mode", "HTML")
-                await session.post(url, data=data)
+                await session.post(f"https://api.telegram.org/bot{token}/sendPhoto", data=data)
         except:
             pass
 
@@ -374,12 +316,7 @@ async def get_expiry_time(page) -> str:
 
 
 async def find_renew_button(page):
-    selectors = [
-        'button:has-text("시간추가")',
-        'button:has-text("Add Time")',
-        'button:has-text("Renew")',
-    ]
-    for selector in selectors:
+    for selector in ['button:has-text("시간추가")', 'button:has-text("Add Time")', 'button:has-text("Renew")']:
         try:
             locator = page.locator(selector)
             if await locator.count() > 0:
@@ -391,17 +328,12 @@ async def find_renew_button(page):
 
 async def try_renew_with_proxy(proxy_url: str, server_url: str, cookie_name: str, cookie_value: str, proxy_label: str = None) -> dict:
     label = proxy_label or proxy_url or "直连"
-    print(f"\n{'='*50}")
-    print(f"🔄 尝试: {label}")
-    print('='*50)
+    print(f"\n{'='*50}\n🔄 尝试: {label}\n{'='*50}")
     
     result = {"success": False, "need_retry": False, "message": "", "new_cookie": None}
     
     async with async_playwright() as p:
-        launch_args = {
-            "headless": True,
-            "args": ['--disable-blink-features=AutomationControlled']
-        }
+        launch_args = {"headless": True, "args": ['--disable-blink-features=AutomationControlled']}
         if proxy_url:
             launch_args["proxy"] = {"server": proxy_url}
         
@@ -410,10 +342,7 @@ async def try_renew_with_proxy(proxy_url: str, server_url: str, cookie_name: str
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             extra_http_headers={'Accept-Language': 'zh-CN,zh;q=0.9'}
         )
-        await context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => false});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-        """)
+        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => false});")
         
         page = await context.new_page()
         page.set_default_timeout(120000)
@@ -421,7 +350,6 @@ async def try_renew_with_proxy(proxy_url: str, server_url: str, cookie_name: str
         renew_result = {"captured": False, "status": None, "body": None}
 
         async def capture_response(response):
-            # 只捕获 /renew POST 请求
             if "/renew" in response.url and response.request.method == "POST":
                 renew_result["captured"] = True
                 renew_result["status"] = response.status
@@ -436,13 +364,11 @@ async def try_renew_with_proxy(proxy_url: str, server_url: str, cookie_name: str
 
         try:
             await context.add_cookies([{"name": cookie_name, "value": cookie_value, "domain": "hub.weirdhost.xyz", "path": "/"}])
-
             print(f"🌐 访问: {server_url}")
             await page.goto(server_url, timeout=90000)
             await wait_for_cloudflare(page, max_wait=120)
             
-            page_ready = await wait_for_page_ready(page, max_wait=30)
-            if not page_ready:
+            if not await wait_for_page_ready(page, max_wait=30):
                 result["need_retry"] = True
                 result["message"] = "页面加载超时"
                 return result
@@ -450,11 +376,10 @@ async def try_renew_with_proxy(proxy_url: str, server_url: str, cookie_name: str
             if "/auth/login" in page.url or "/login" in page.url:
                 result["message"] = "Cookie 已失效"
                 await page.screenshot(path="login_failed.png", full_page=True)
-                await tg_notify_photo("login_failed.png", "🎁 <b>Weirdhost 续订报告</b>\n\n❌ Cookie 已失效，请手动更新")
+                await tg_notify_photo("login_failed.png", "🎁 <b>Weirdhost 续订报告</b>\n\n❌ Cookie 已失效")
                 return result
 
             print("✅ 登录成功")
-
             expiry_time = await get_expiry_time(page)
             remaining_time = calculate_remaining_time(expiry_time)
             print(f"📅 到期: {expiry_time} | 剩余: {remaining_time}")
@@ -467,14 +392,11 @@ async def try_renew_with_proxy(proxy_url: str, server_url: str, cookie_name: str
 
             await add_button.wait_for(state="visible", timeout=10000)
             await page.wait_for_timeout(1000)
-            
             print("📌 点击续期按钮...")
             await add_button.click()
             await page.wait_for_timeout(3000)
-            
             await wait_for_turnstile(page, max_wait=60)
             
-            # 尝试点击复选框
             for _ in range(3):
                 try:
                     checkbox = await page.wait_for_selector('input[type="checkbox"]:not([disabled])', timeout=3000)
@@ -486,14 +408,11 @@ async def try_renew_with_proxy(proxy_url: str, server_url: str, cookie_name: str
                     await page.evaluate("document.querySelector('input[type=\"checkbox\"]:not([disabled])')?.click()")
                 await page.wait_for_timeout(1000)
             
-            # 等待续期 API 响应
             print("⏳ 等待续期 API 响应...")
             for i in range(60):
                 if renew_result["captured"]:
                     print(f"✅ 捕获到续期响应 ({i+1}秒)")
                     break
-                if i % 10 == 0 and i > 0:
-                    print(f"⏳ 等待中... ({i}秒)")
                 await page.wait_for_timeout(1000)
 
             if renew_result["captured"]:
@@ -501,7 +420,6 @@ async def try_renew_with_proxy(proxy_url: str, server_url: str, cookie_name: str
                 body = renew_result["body"]
 
                 if status in (200, 201, 204):
-                    # 刷新获取新到期时间
                     await page.wait_for_timeout(2000)
                     await page.reload()
                     await wait_for_cloudflare(page, max_wait=30)
@@ -509,30 +427,14 @@ async def try_renew_with_proxy(proxy_url: str, server_url: str, cookie_name: str
                     new_expiry = await get_expiry_time(page)
                     new_remaining = calculate_remaining_time(new_expiry)
                     
-                    # 检查时间是否真的更新了
-                    if new_expiry != expiry_time:
-                        msg = f"""🎁 <b>Weirdhost 续订报告</b>
-
-✅ 续期成功！
-📅 新到期时间: {new_expiry}
-⏳ 剩余时间: {new_remaining}{proxy_info}"""
-                    else:
-                        msg = f"""🎁 <b>Weirdhost 续订报告</b>
-
-ℹ️ 续期请求成功，但时间未变化
-📅 到期时间: {new_expiry}
-⏳ 剩余时间: {new_remaining}{proxy_info}"""
+                    msg = f"🎁 <b>Weirdhost 续订报告</b>\n\n✅ 续期成功！\n📅 新到期时间: {new_expiry}\n⏳ 剩余时间: {new_remaining}{proxy_info}"
                     await tg_notify(msg)
                     result["success"] = True
 
                 elif status == 400:
                     error_detail = parse_renew_error(body)
                     if is_cooldown_error(error_detail):
-                        msg = f"""🎁 <b>Weirdhost 续订报告</b>
-
-ℹ️ 暂无需续期（冷却期内）
-📅 到期时间: {expiry_time}
-⏳ 剩余时间: {remaining_time}{proxy_info}"""
+                        msg = f"🎁 <b>Weirdhost 续订报告</b>\n\nℹ️ 暂无需续期（冷却期内）\n📅 到期时间: {expiry_time}\n⏳ 剩余时间: {remaining_time}{proxy_info}"
                         await tg_notify(msg)
                         result["success"] = True
                     else:
@@ -572,17 +474,10 @@ async def add_server_time():
     proxies = []
     xray_proc = None
     
-    # 优先使用 VLESS
     if VLESS_URI:
         xray_proc = await start_xray_client()
         if xray_proc:
             proxies.append((f"socks5://127.0.0.1:{XRAY_LOCAL_PORT}", "VLESS"))
-    
-    # 获取家宽代理
-    print("🚀 获取家宽代理列表...")
-    socks_proxies = await fetch_residential_proxies()
-    for p in socks_proxies:
-        proxies.append((p, p))
     
     if ENABLE_DIRECT:
         proxies.append((None, "直连"))
@@ -594,7 +489,6 @@ async def add_server_time():
     try:
         for i, (proxy_url, label) in enumerate(proxies):
             print(f"\n🔄 [{i+1}/{len(proxies)}] 尝试: {label}")
-            
             result = await try_renew_with_proxy(proxy_url, server_url, cookie_name, cookie_value, label)
             
             if result.get("new_cookie"):
@@ -617,6 +511,7 @@ async def add_server_time():
         if xray_proc:
             xray_proc.terminate()
             print("🛑 Xray 已停止")
+
 
 if __name__ == "__main__":
     asyncio.run(add_server_time())
