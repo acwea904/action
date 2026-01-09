@@ -37,8 +37,7 @@ jobs:
           REMEMBER_WEB_COOKIE: ${{ secrets.REMEMBER_WEB_COOKIE }}
           REMEMBER_WEB_COOKIE_NAME: ${{ secrets.REMEMBER_WEB_COOKIE_NAME }}
           # 代理列表 URL
-          HY2_URI: ${{ secrets.HY2_URI }}
-          PROXY_LIST_URL: ${{ secrets.PROXY_LIST_URL }}
+          VLESS_URI: ${{ secrets.VLESS_URI }}
           # 目标服务器
           SERVER_URL: ${{ secrets.SERVER_URL }}
           # Telegram 通知
