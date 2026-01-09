@@ -247,54 +247,61 @@ async def test_proxy(proxy_url: str) -> bool:
         return False
 
 
-async def try_with_proxy(proxy_url: str, server_url: str, cookie_name: str, cookie_value: str) -> dict:
-    """使用指定代理尝试访问"""
+async def try_with_proxy(proxy_url: str, server_url: str, cookie_name: str, cookie_value: str) -> bool:
+    """测试代理是否能通过 CF 验证"""
     print(f"🔄 尝试代理: {proxy_url}")
     
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=['--disable-blink-features=AutomationControlled'],
-            proxy={"server": proxy_url}
-        )
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            extra_http_headers={'Accept-Language': 'zh-CN,zh;q=0.9'}
-        )
-        await context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => false});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-        """)
-        
-        page = await context.new_page()
-        page.set_default_timeout(60000)
-        
-        result = {"success": False, "cf_passed": False, "error": None}
-        
         try:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=['--disable-blink-features=AutomationControlled'],
+                proxy={"server": proxy_url}
+            )
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            )
+            page = await context.new_page()
+            page.set_default_timeout(30000)
+            
             await context.add_cookies([{"name": cookie_name, "value": cookie_value, "domain": "hub.weirdhost.xyz", "path": "/"}])
             await page.goto(server_url, timeout=30000)
             
-            cf_passed = await wait_for_cloudflare(page, max_wait=60)
-            result["cf_passed"] = cf_passed
+            cf_passed = await wait_for_cloudflare(page, max_wait=30)
+            await context.close()
+            await browser.close()
             
-            if cf_passed:
-                await page.wait_for_timeout(2000)
-                if "/auth/login" not in page.url and "/login" not in page.url:
-                    result["success"] = True
-                    result["page"] = page
-                    result["context"] = context
-                    result["browser"] = browser
-                    return result
-                    
+            if cf_passed and "/login" not in page.url:
+                return True
         except Exception as e:
-            result["error"] = str(e)
-            print(f"❌ 代理 {proxy_url} 失败: {e}")
-        
-        await context.close()
-        await browser.close()
-        return result
+            print(f"❌ 代理失败: {e}")
+    return False
 
+
+async def add_server_time():
+    server_url = os.environ.get("SERVER_URL", DEFAULT_SERVER_URL)
+    cookie_value = os.environ.get("REMEMBER_WEB_COOKIE", "").strip()
+    cookie_name = os.environ.get("REMEMBER_WEB_COOKIE_NAME", DEFAULT_COOKIE_NAME)
+
+    if not cookie_value:
+        await tg_notify("🎁 <b>Weirdhost 续订报告</b>\n\n❌ REMEMBER_WEB_COOKIE 未设置")
+        return
+
+    print("🚀 获取家宽代理列表...")
+    proxies = await fetch_residential_proxies()
+    
+    # 找到可用代理
+    working_proxy = None
+    for proxy in proxies:
+        if await try_with_proxy(proxy, server_url, cookie_name, cookie_value):
+            print(f"✅ 代理 {proxy} 可用!")
+            working_proxy = proxy
+            break
+        print(f"❌ 代理 {proxy} 不可用")
+    
+    # 使用可用代理或直连执行主逻辑
+    async with async_playwright() as p:
+        await run_main_logic(p, server_url, cookie_name, cookie_value, working_proxy)
 
 async def add_server_time():
     server_url = os.environ.get("SERVER_URL", DEFAULT_SERVER_URL)
