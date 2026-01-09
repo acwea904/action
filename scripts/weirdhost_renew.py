@@ -21,6 +21,7 @@ except ImportError:
 
 DEFAULT_SERVER_URL = "https://hub.weirdhost.xyz/server/d341874c"
 DEFAULT_COOKIE_NAME = "remember_web"
+ENABLE_DIRECT = False  # True 启用直连，False 禁用
 PROXY_LIST_URL = os.environ.get("PROXY_LIST_URL", "")
 HY2_URI = os.environ.get("HY2_URI", "")
 HY2_LOCAL_PORT = 10808
@@ -514,6 +515,7 @@ async def add_server_time():
     server_url = os.environ.get("SERVER_URL", DEFAULT_SERVER_URL)
     cookie_value = os.environ.get("REMEMBER_WEB_COOKIE", "").strip()
     cookie_name = os.environ.get("REMEMBER_WEB_COOKIE_NAME", DEFAULT_COOKIE_NAME)
+    enable_direct = os.environ.get("ENABLE_DIRECT", "").lower() == "true"
 
     if not cookie_value:
         await tg_notify("🎁 <b>Weirdhost 续订报告</b>\n\n❌ REMEMBER_WEB_COOKIE 未设置")
@@ -532,7 +534,13 @@ async def add_server_time():
     for p in socks_proxies:
         proxies.append((p, p))
     
-    proxies.append((None, "直连"))
+    # 只有开关打开时才添加直连
+    if ENABLE_DIRECT:
+        proxies.append((None, "直连"))
+    
+    if not proxies:
+        await tg_notify("🎁 <b>Weirdhost 续订报告</b>\n\n❌ 无可用代理，直连已禁用")
+        return
     
     try:
         for i, (proxy_url, label) in enumerate(proxies):
@@ -560,7 +568,6 @@ async def add_server_time():
         if hy2_proc:
             hy2_proc.terminate()
             print("🛑 Hysteria2 已停止")
-
 
 if __name__ == "__main__":
     asyncio.run(add_server_time())
