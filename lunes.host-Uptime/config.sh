@@ -35,4 +35,5 @@ export NZ_SERVER="beck.nyc.mn:443"      # 哪吒服务器地址:端口
 export NZ_UUID="fe3d**************ae7"  # Agent UUID
 export NZ_CLIENT_SECRET="444*****************444" # 客户端密钥
 export NZ_TLS=true                          # 是否启用 TLS (true/false)
-# export NZ_AGENT_VERSION="v1.0.0"           # 可选，默认自动获取最新版
+export NZ_CHECK_INTERVAL=600                # 哪吒 Agent 检查间隔（秒），默认 600
+# export NZ_AGENT_VERSION="v1.0.0"          # 可选，默认自动获取最新版
