@@ -29,7 +29,7 @@ jobs:
           REMEMBER_WEB_COOKIE: ${{ secrets.REMEMBER_WEB_COOKIE }}
           REMEMBER_WEB_COOKIE_NAME: ${{ secrets.REMEMBER_WEB_COOKIE_NAME }}
           # 目标服务器
-          SERVER_URL: ${{ secrets.SERVER_URL }}
+          # SERVER_URL: ${{ secrets.SERVER_URL }}
           # Telegram 通知
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
