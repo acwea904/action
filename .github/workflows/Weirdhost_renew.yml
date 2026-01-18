@@ -1,4 +1,4 @@
-name: Weirdhost 续订
+name: Weirdhost 提醒续订
 on:
   schedule:
     - cron: '15 16 * * *'  # 每天北京时间 00:15 运行
