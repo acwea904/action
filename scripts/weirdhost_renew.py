@@ -18,6 +18,21 @@ DEFAULT_DASHBOARD_URL = "https://hub.weirdhost.xyz/"
 DEFAULT_COOKIE_NAME = "remember_web"
 
 
+def mask_url(url: str) -> str:
+    """部分隐藏 URL 中的服务器 ID"""
+    try:
+        if "/server/" in url:
+            parts = url.split("/server/")
+            if len(parts) == 2:
+                server_id = parts[1]
+                if len(server_id) > 4:
+                    masked_id = server_id[:2] + "*" * (len(server_id) - 4) + server_id[-2:]
+                    return f"{parts[0]}/server/{masked_id}"
+        return url
+    except:
+        return url
+
+
 def calculate_remaining_time(expiry_str: str) -> str:
     try:
         for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
@@ -233,10 +248,10 @@ async def get_first_server_url(page, dashboard_url: str) -> str:
         
         if server_id:
             server_url = f"https://hub.weirdhost.xyz/server/{server_id}"
-            print(f"✅ 自动获取到服务器: {server_url}")
+            print(f"✅ 自动获取到服务器: {mask_url(server_url)}")
             return server_url
         else:
-            print("⚠️ 未找到服务器,使用默认 URL")
+            print("⚠️ 未找到服务器")
             return None
     except Exception as e:
         print(f"⚠️ 获取服务器列表失败: {e}")
@@ -294,7 +309,7 @@ async def add_server_time():
                     await tg_notify(msg)
                     return
 
-            print(f"🌐 访问: {server_url}")
+            print(f"🌐 访问: {mask_url(server_url)}")
             await page.goto(server_url, timeout=90000)
             await wait_for_cloudflare(page, max_wait=120)
             await page.wait_for_timeout(2000)
@@ -318,7 +333,7 @@ async def add_server_time():
             
             add_button = await find_renew_button(page)
             if not add_button:
-                msg = f"🎁 <b>Weirdhost 续订报告</b>\n\n⚠️ 未找到续期按钮\n📅 到期: {expiry_time}\n⏳ 剩余: {remaining_time}"
+                msg = f"🎁 <b>Weirdhost 续订报告</b>\n\n⚠️ 未找到续期按钮\n📅 到期: {expiry_time}\n⏳ 剩余: {remaining_time}\n🔗 {mask_url(server_url)}"
                 await page.screenshot(path="no_button.png", full_page=True)
                 await tg_notify_photo("no_button.png", msg)
                 return
@@ -332,7 +347,7 @@ async def add_server_time():
             cf_passed = await wait_for_cloudflare(page, max_wait=120)
             
             if not cf_passed:
-                msg = f"🎁 <b>Weirdhost 续订报告</b>\n\n⚠️ CF 验证超时\n📅 到期: {expiry_time}\n⏳ 剩余: {remaining_time}"
+                msg = f"🎁 <b>Weirdhost 续订报告</b>\n\n⚠️ CF 验证超时\n📅 到期: {expiry_time}\n⏳ 剩余: {remaining_time}\n🔗 {mask_url(server_url)}"
                 await page.screenshot(path="cf_timeout.png", full_page=True)
                 await tg_notify_photo("cf_timeout.png", msg)
                 return
@@ -377,7 +392,7 @@ async def add_server_time():
 ✅ 续期成功!
 📅 新到期时间: {new_expiry}
 ⏳ 剩余时间: {new_remaining}
-🔗 {server_url}"""
+🔗 {mask_url(server_url)}"""
                     print(f"✅ 续期成功!")
                     await tg_notify(msg)
 
@@ -388,7 +403,8 @@ async def add_server_time():
 
 ℹ️ 暂无需续期(冷却期内)
 📅 到期时间: {expiry_time}
-⏳ 剩余时间: {remaining_time}"""
+⏳ 剩余时间: {remaining_time}
+🔗 {mask_url(server_url)}"""
                         print(f"ℹ️ 冷却期内")
                         await tg_notify(msg)
                     else:
@@ -397,7 +413,8 @@ async def add_server_time():
 ❌ 续期失败
 📝 错误: {error_detail}
 📅 到期时间: {expiry_time}
-⏳ 剩余时间: {remaining_time}"""
+⏳ 剩余时间: {remaining_time}
+🔗 {mask_url(server_url)}"""
                         await tg_notify(msg)
                 else:
                     msg = f"""🎁 <b>Weirdhost 续订报告</b>
@@ -405,14 +422,16 @@ async def add_server_time():
 ❌ 续期失败
 📝 HTTP {status}: {body}
 📅 到期时间: {expiry_time}
-⏳ 剩余时间: {remaining_time}"""
+⏳ 剩余时间: {remaining_time}
+🔗 {mask_url(server_url)}"""
                     await tg_notify(msg)
             else:
                 msg = f"""🎁 <b>Weirdhost 续订报告</b>
 
 ⚠️ 未检测到 API 响应
 📅 到期时间: {expiry_time}
-⏳ 剩余时间: {remaining_time}"""
+⏳ 剩余时间: {remaining_time}
+🔗 {mask_url(server_url)}"""
                 await page.screenshot(path="no_response.png", full_page=True)
                 await tg_notify_photo("no_response.png", msg)
 
