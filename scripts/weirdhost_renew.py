@@ -223,16 +223,69 @@ async def extract_remember_cookie(context) -> tuple:
 
 
 async def get_expiry_time(page) -> str:
+    """获取到期时间，支持多种格式"""
     try:
-        return await page.evaluate("""
+        # 方法1: 通过正则匹配（多种模式）
+        expiry = await page.evaluate("""
             () => {
                 const text = document.body.innerText;
-                const match = text.match(/유통기한\\s*(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2}:\\d{2})?)/);
-                if (match) return match[1].trim();
-                return 'Unknown';
+                
+                // 尝试多种正则模式
+                const patterns = [
+                    /유통기한[\\s\\S]*?(\\d{4}-\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}:\\d{2})/,
+                    /유통기한[\\s\\S]*?(\\d{4}-\\d{2}-\\d{2})/,
+                    /expiry[\\s\\S]*?(\\d{4}-\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}:\\d{2})/i,
+                    /expiry[\\s\\S]*?(\\d{4}-\\d{2}-\\d{2})/i,
+                    /(\\d{4}-\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}:\\d{2})/,
+                    /(\\d{4}-\\d{2}-\\d{2})/
+                ];
+                
+                for (const pattern of patterns) {
+                    const match = text.match(pattern);
+                    if (match) {
+                        return match[1].trim();
+                    }
+                }
+                
+                return null;
             }
         """)
-    except:
+        
+        if expiry:
+            print(f"✅ 方法1获取到时间: {expiry}")
+            return expiry
+        
+        # 方法2: 通过选择器直接获取
+        expiry = await page.evaluate("""
+            () => {
+                // 查找包含时间的元素
+                const elements = document.querySelectorAll('p, span, div');
+                for (const el of elements) {
+                    const text = el.textContent || '';
+                    if (text.includes('유통기한') || text.includes('expiry')) {
+                        const match = text.match(/(\\d{4}-\\d{2}-\\d{2}(?:\\s+\\d{2}:\\d{2}:\\d{2})?)/);
+                        if (match) {
+                            return match[1].trim();
+                        }
+                    }
+                }
+                return null;
+            }
+        """)
+        
+        if expiry:
+            print(f"✅ 方法2获取到时间: {expiry}")
+            return expiry
+        
+        # 方法3: 获取页面文本用于调试
+        page_text = await page.evaluate("() => document.body.innerText")
+        print(f"⚠️ 未匹配到时间")
+        print(f"📄 页面文本片段: {page_text[:500]}")
+        
+        return "Unknown"
+        
+    except Exception as e:
+        print(f"⚠️ 获取时间异常: {e}")
         return "Unknown"
 
 
@@ -417,7 +470,6 @@ async def add_server_time():
             print(f"📅 到期: {expiry_time} | 剩余: {remaining_time} ({remaining_days}天)")
 
             # 【核心逻辑】检查是否需要发送到期提醒
-            # 剩余 ≤ 2天、≤ 1天、≤ 0天（已过期）都发送提醒
             if remaining_days is not None and remaining_days <= NOTIFY_DAYS_BEFORE:
                 print(f"\n{'='*50}")
                 print(f"⚠️ 触发到期提醒：剩余 {remaining_days} 天")
@@ -426,8 +478,6 @@ async def add_server_time():
                 msg = format_manual_renew_notification(server_url, expiry_time, remaining_days)
                 await tg_notify(msg)
                 print("✅ 已发送手动续订提醒")
-                
-                # 发送提醒后直接返回，不再尝试自动续期
                 return
 
             print("\n" + "="*50)
