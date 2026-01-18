@@ -29,6 +29,13 @@ def extract_server_id(url: str) -> str:
         return "Unknown"
 
 
+def mask_server_id(server_id: str) -> str:
+    """脱敏服务器 ID，只显示前2位和后2位"""
+    if not server_id or server_id == "Unknown" or len(server_id) < 6:
+        return server_id
+    return f"{server_id[:2]}****{server_id[-2:]}"
+
+
 def calculate_remaining_days(expiry_str: str) -> int:
     """计算剩余天数（负数表示已过期）"""
     try:
@@ -326,7 +333,7 @@ async def get_first_server_url(page, dashboard_url: str) -> str:
         
         if server_id:
             server_url = f"https://hub.weirdhost.xyz/server/{server_id}"
-            print(f"✅ 自动获取到服务器: {server_id}")
+            print(f"✅ 自动获取到服务器: {mask_server_id(server_id)}")
             return server_url
         else:
             print("⚠️ 未找到服务器")
@@ -437,7 +444,8 @@ async def add_server_time():
                     return
 
             server_id = extract_server_id(server_url)
-            print(f"🌐 访问服务器: {server_id}")
+            masked_id = mask_server_id(server_id)
+            print(f"🌐 访问服务器: {masked_id}")
             
             await page.goto(server_url, timeout=90000)
             await wait_for_cloudflare(page, max_wait=120)
