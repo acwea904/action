@@ -17,14 +17,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Xray
-        run: |
-          wget -q -O /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip -q /tmp/xray.zip -d /tmp/xray
-          chmod +x /tmp/xray/xray
-          sudo mv /tmp/xray/xray /usr/local/bin/xray
-          xray version || echo "⚠️ Xray 安装失败"
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -36,8 +28,6 @@ jobs:
           # Cookie 登录
           REMEMBER_WEB_COOKIE: ${{ secrets.REMEMBER_WEB_COOKIE }}
           REMEMBER_WEB_COOKIE_NAME: ${{ secrets.REMEMBER_WEB_COOKIE_NAME }}
-          # 代理列表 URL
-          VLESS_URI: ${{ secrets.VLESS_URI }}
           # 目标服务器
           SERVER_URL: ${{ secrets.SERVER_URL }}
           # Telegram 通知
