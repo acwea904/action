@@ -16,24 +16,39 @@ except ImportError:
 
 DEFAULT_DASHBOARD_URL = "https://hub.weirdhost.xyz/"
 DEFAULT_COOKIE_NAME = "remember_web"
+NOTIFY_DAYS_BEFORE = 2  # 到期前几天通知
 
 
-def mask_url(url: str) -> str:
-    """部分隐藏 URL 中的服务器 ID"""
+def extract_server_id(url: str) -> str:
+    """从 URL 中提取服务器 ID"""
     try:
         if "/server/" in url:
-            parts = url.split("/server/")
-            if len(parts) == 2:
-                server_id = parts[1]
-                if len(server_id) > 4:
-                    masked_id = server_id[:2] + "*" * (len(server_id) - 4) + server_id[-2:]
-                    return f"{parts[0]}/server/{masked_id}"
-        return url
+            return url.split("/server/")[-1].strip("/")
+        return "Unknown"
     except:
-        return url
+        return "Unknown"
 
 
-def calculate_remaining_time(expiry_str: str) -> str:
+def calculate_remaining_days(expiry_str: str) -> int:
+    """计算剩余天数（负数表示已过期）"""
+    try:
+        for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
+            try:
+                expiry_dt = datetime.strptime(expiry_str.strip(), fmt)
+                break
+            except ValueError:
+                continue
+        else:
+            return None
+        
+        diff = expiry_dt - datetime.now()
+        return diff.days
+    except:
+        return None
+
+
+def format_remaining_time(expiry_str: str) -> str:
+    """格式化剩余时间显示"""
     try:
         for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
             try:
@@ -43,22 +58,33 @@ def calculate_remaining_time(expiry_str: str) -> str:
                 continue
         else:
             return "无法解析"
+        
         diff = expiry_dt - datetime.now()
         if diff.total_seconds() < 0:
             return "⚠️ 已过期"
+        
         days = diff.days
         hours, remainder = divmod(diff.seconds, 3600)
         minutes = remainder // 60
+        
         parts = []
         if days > 0:
-            parts.append(f"{days}天")
+            parts.append(f"{days} 天")
         if hours > 0:
-            parts.append(f"{hours}小时")
+            parts.append(f"{hours} 小时")
         if minutes > 0 and days == 0:
-            parts.append(f"{minutes}分钟")
-        return " ".join(parts) if parts else "不到1分钟"
+            parts.append(f"{minutes} 分钟")
+        
+        return " ".join(parts) if parts else "不到 1 分钟"
     except:
         return "计算失败"
+
+
+def get_executor_name() -> str:
+    """获取执行器名称"""
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        return "GitHub Actions"
+    return "本地执行"
 
 
 def parse_renew_error(body: dict) -> str:
@@ -234,7 +260,6 @@ async def get_first_server_url(page, dashboard_url: str) -> str:
         await wait_for_cloudflare(page, max_wait=120)
         await page.wait_for_timeout(2000)
         
-        # 提取第一个服务器的 ID
         server_id = await page.evaluate("""
             () => {
                 const firstLink = document.querySelector('table tr td a[href^="/server/"]');
@@ -248,7 +273,7 @@ async def get_first_server_url(page, dashboard_url: str) -> str:
         
         if server_id:
             server_url = f"https://hub.weirdhost.xyz/server/{server_id}"
-            print(f"✅ 自动获取到服务器: {mask_url(server_url)}")
+            print(f"✅ 自动获取到服务器: {server_id}")
             return server_url
         else:
             print("⚠️ 未找到服务器")
@@ -258,13 +283,63 @@ async def get_first_server_url(page, dashboard_url: str) -> str:
         return None
 
 
+def format_manual_renew_notification(server_url: str, expiry_time: str, remaining_days: int) -> str:
+    """格式化手动续订通知"""
+    server_id = extract_server_id(server_url)
+    remaining_time = format_remaining_time(expiry_time)
+    executor = get_executor_name()
+    
+    # 根据剩余天数设置状态
+    if remaining_days < 0:
+        status_emoji = "🔴"
+        status_text = "已过期"
+    elif remaining_days == 0:
+        status_emoji = "🔴"
+        status_text = "今天到期"
+    elif remaining_days == 1:
+        status_emoji = "🟡"
+        status_text = "明天到期"
+    else:
+        status_emoji = "🟡"
+        status_text = f"{remaining_days} 天后到期"
+    
+    return f"""⚠️ <b>Weirdhost 需要手动续订</b>
+
+{status_emoji} <b>{status_text}</b>
+🖥 服务器: <code>{server_id}</code>
+📅 到期时间: <code>{expiry_time}</code>
+⏳ 剩余时间: <b>{remaining_time}</b>
+❗️ 自动续订需要验证码
+💻 执行器: {executor}
+
+👉 <a href="{server_url}">点击续订</a>"""
+
+
+def format_time_fetch_error_notification(server_url: str) -> str:
+    """格式化获取时间失败的通知"""
+    server_id = extract_server_id(server_url)
+    executor = get_executor_name()
+    
+    return f"""⚠️ <b>Weirdhost 状态异常</b>
+
+❌ 无法获取到期时间
+🖥 服务器: <code>{server_id}</code>
+🔍 可能原因:
+  • 页面结构变化
+  • Cookie 失效
+  • 服务器状态异常
+💻 执行器: {executor}
+
+👉 <a href="{server_url}">点击检查</a>"""
+
+
 async def add_server_time():
     cookie_value = os.environ.get("REMEMBER_WEB_COOKIE", "").strip()
     cookie_name = os.environ.get("REMEMBER_WEB_COOKIE_NAME", DEFAULT_COOKIE_NAME)
     dashboard_url = os.environ.get("DASHBOARD_URL", DEFAULT_DASHBOARD_URL)
 
     if not cookie_value:
-        await tg_notify("🎁 <b>Weirdhost 续订报告</b>\n\n❌ REMEMBER_WEB_COOKIE 未设置")
+        print("❌ REMEMBER_WEB_COOKIE 未设置")
         return
 
     print("🚀 启动 Playwright...")
@@ -305,51 +380,75 @@ async def add_server_time():
             if not server_url:
                 server_url = await get_first_server_url(page, dashboard_url)
                 if not server_url:
-                    msg = "🎁 <b>Weirdhost 续订报告</b>\n\n❌ 无法获取服务器 URL"
-                    await tg_notify(msg)
+                    print("❌ 无法获取服务器 URL")
                     return
 
-            print(f"🌐 访问: {mask_url(server_url)}")
+            server_id = extract_server_id(server_url)
+            print(f"🌐 访问服务器: {server_id}")
+            
             await page.goto(server_url, timeout=90000)
             await wait_for_cloudflare(page, max_wait=120)
             await page.wait_for_timeout(2000)
             await wait_for_page_ready(page, max_wait=20)
 
             if "/auth/login" in page.url or "/login" in page.url:
-                msg = "🎁 <b>Weirdhost 续订报告</b>\n\n❌ Cookie 已失效,请手动更新"
-                await page.screenshot(path="login_failed.png", full_page=True)
-                await tg_notify_photo("login_failed.png", msg)
+                print("❌ Cookie 已失效（静默处理）")
                 return
 
             print("✅ 登录成功")
 
             expiry_time = await get_expiry_time(page)
-            remaining_time = calculate_remaining_time(expiry_time)
-            print(f"📅 到期: {expiry_time} | 剩余: {remaining_time}")
+            
+            # 【核心逻辑】检查是否获取到时间
+            if expiry_time == "Unknown" or not expiry_time:
+                print(f"\n{'='*50}")
+                print("❌ 无法获取到期时间，发送通知")
+                print(f"{'='*50}\n")
+                
+                msg = format_time_fetch_error_notification(server_url)
+                await page.screenshot(path="time_fetch_error.png", full_page=True)
+                await tg_notify_photo("time_fetch_error.png", msg)
+                print("✅ 已发送时间获取失败通知")
+                return
+            
+            remaining_time = format_remaining_time(expiry_time)
+            remaining_days = calculate_remaining_days(expiry_time)
+            
+            print(f"📅 到期: {expiry_time} | 剩余: {remaining_time} ({remaining_days}天)")
+
+            # 【核心逻辑】检查是否需要发送到期提醒
+            # 剩余 ≤ 2天、≤ 1天、≤ 0天（已过期）都发送提醒
+            if remaining_days is not None and remaining_days <= NOTIFY_DAYS_BEFORE:
+                print(f"\n{'='*50}")
+                print(f"⚠️ 触发到期提醒：剩余 {remaining_days} 天")
+                print(f"{'='*50}\n")
+                
+                msg = format_manual_renew_notification(server_url, expiry_time, remaining_days)
+                await tg_notify(msg)
+                print("✅ 已发送手动续订提醒")
+                
+                # 发送提醒后直接返回，不再尝试自动续期
+                return
 
             print("\n" + "="*50)
-            print("📌 点击续期按钮")
+            print("📌 尝试自动续期")
             print("="*50)
             
             add_button = await find_renew_button(page)
             if not add_button:
-                msg = f"🎁 <b>Weirdhost 续订报告</b>\n\n⚠️ 未找到续期按钮\n📅 到期: {expiry_time}\n⏳ 剩余: {remaining_time}\n🔗 {mask_url(server_url)}"
-                await page.screenshot(path="no_button.png", full_page=True)
-                await tg_notify_photo("no_button.png", msg)
+                print("⚠️ 未找到续期按钮（静默处理）")
                 return
 
             await add_button.wait_for(state="visible", timeout=10000)
             await page.wait_for_timeout(1000)
             await add_button.click()
-            print("🔄 已点击续期按钮,等待 CF 验证...")
+            print("🔄 已点击续期按钮，等待 CF 验证...")
 
             await page.wait_for_timeout(5000)
             cf_passed = await wait_for_cloudflare(page, max_wait=120)
             
             if not cf_passed:
-                msg = f"🎁 <b>Weirdhost 续订报告</b>\n\n⚠️ CF 验证超时\n📅 到期: {expiry_time}\n⏳ 剩余: {remaining_time}\n🔗 {mask_url(server_url)}"
-                await page.screenshot(path="cf_timeout.png", full_page=True)
-                await tg_notify_photo("cf_timeout.png", msg)
+                print("⚠️ CF 验证超时（静默处理）")
                 return
 
             print("⏳ 等待复选框...")
@@ -380,74 +479,46 @@ async def add_server_time():
                 body = renew_result["body"]
 
                 if status in (200, 201, 204):
+                    # 【核心逻辑】续期成功，发送通知
                     await page.wait_for_timeout(2000)
                     await page.reload()
                     await wait_for_cloudflare(page, max_wait=30)
                     await page.wait_for_timeout(3000)
                     new_expiry = await get_expiry_time(page)
-                    new_remaining = calculate_remaining_time(new_expiry)
+                    new_remaining = format_remaining_time(new_expiry)
                     
                     msg = f"""🎁 <b>Weirdhost 续订报告</b>
 
-✅ 续期成功!
-📅 新到期时间: {new_expiry}
-⏳ 剩余时间: {new_remaining}
-🔗 {mask_url(server_url)}"""
-                    print(f"✅ 续期成功!")
+✅ 续期成功！
+🖥 服务器: <code>{server_id}</code>
+📅 新到期时间: <code>{new_expiry}</code>
+⏳ 剩余时间: <b>{new_remaining}</b>
+💻 执行器: {get_executor_name()}"""
+                    
+                    print(f"\n{'='*50}")
+                    print("✅ 续期成功！发送通知")
+                    print(f"{'='*50}\n")
                     await tg_notify(msg)
 
                 elif status == 400:
                     error_detail = parse_renew_error(body)
                     if is_cooldown_error(error_detail):
-                        msg = f"""🎁 <b>Weirdhost 续订报告</b>
-
-ℹ️ 暂无需续期(冷却期内)
-📅 到期时间: {expiry_time}
-⏳ 剩余时间: {remaining_time}
-🔗 {mask_url(server_url)}"""
-                        print(f"ℹ️ 冷却期内")
-                        await tg_notify(msg)
+                        print(f"ℹ️ 冷却期内（静默处理）")
                     else:
-                        msg = f"""🎁 <b>Weirdhost 续订报告</b>
-
-❌ 续期失败
-📝 错误: {error_detail}
-📅 到期时间: {expiry_time}
-⏳ 剩余时间: {remaining_time}
-🔗 {mask_url(server_url)}"""
-                        await tg_notify(msg)
+                        print(f"⚠️ 续期失败: {error_detail}（静默处理）")
                 else:
-                    msg = f"""🎁 <b>Weirdhost 续订报告</b>
-
-❌ 续期失败
-📝 HTTP {status}: {body}
-📅 到期时间: {expiry_time}
-⏳ 剩余时间: {remaining_time}
-🔗 {mask_url(server_url)}"""
-                    await tg_notify(msg)
+                    print(f"⚠️ HTTP {status}（静默处理）")
             else:
-                msg = f"""🎁 <b>Weirdhost 续订报告</b>
+                print("⚠️ 未检测到 API 响应（静默处理）")
 
-⚠️ 未检测到 API 响应
-📅 到期时间: {expiry_time}
-⏳ 剩余时间: {remaining_time}
-🔗 {mask_url(server_url)}"""
-                await page.screenshot(path="no_response.png", full_page=True)
-                await tg_notify_photo("no_response.png", msg)
-
+            # 更新 Cookie
             new_name, new_value = await extract_remember_cookie(context)
             if new_value and new_value != cookie_value:
+                print("🔄 更新 Cookie")
                 await update_github_secret("REMEMBER_WEB_COOKIE", new_value)
 
         except Exception as e:
-            msg = f"🎁 <b>Weirdhost 续订报告</b>\n\n❌ 异常: {repr(e)}"
-            print(msg)
-            try:
-                await page.screenshot(path="error.png", full_page=True)
-                await tg_notify_photo("error.png", msg)
-            except:
-                pass
-            await tg_notify(msg)
+            print(f"❌ 异常: {repr(e)}（静默处理）")
 
         finally:
             await context.close()
