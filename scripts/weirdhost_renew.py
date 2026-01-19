@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-weirdhost-auto - main.py
 功能：使用 Cookie 登录 → 续期 → 提取新 Cookie → 更新 GitHub Secrets
 环境变量：
   - REMEMBER_WEB_COOKIE : cookie 值（必须）
