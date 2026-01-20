@@ -1,40 +1,41 @@
-name: Data Online 重启
+name: Data Online 执行重启
 
 on:
- # schedule:
- #   - cron: '0 */6 * * *'  # 每6小时运行
-  workflow_dispatch:       # 手动触发
+  # 定时任务 - 每6小时运行一次
+  # schedule:
+  #  - cron: '0 */6 * * *'
+  # 手动触发
+  workflow_dispatch:
 
 jobs:
-  execute-terminal:
+  执行终端命令:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     
     steps:
-      - name: Checkout repository
+      - name: 拉取代码仓库
         uses: actions/checkout@v4
       
-      - name: Set up Python
+      - name: 配置 Python 环境
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
-      - name: Install dependencies
+      - name: 安装依赖
         run: |
-          pip install playwright
+          echo "📦 正在安装依赖..."
+          pip install playwright httpx
+          echo "🌐 正在安装 Chromium 浏览器..."
           playwright install chromium
           playwright install-deps chromium
+          echo "✅ 依赖安装完成"
       
-      - name: Run terminal script
+      - name: 执行终端脚本
         env:
           DATA_USERNAME: ${{ secrets.DATA_USERNAME }}
           DATA_PASSWORD: ${{ secrets.DATA_PASSWORD }}
-        run: python scripts/data-online_renew.py
-      
-      - name: Upload screenshots
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: screenshots-${{ github.run_number }}
-          path: "*.png"
-          retention-days: 7
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          echo "🚀 开始执行脚本..."
+          python terminal_script.py
