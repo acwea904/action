@@ -11,6 +11,9 @@ permissions:
   contents: read
   actions: write
 
+env:
+  PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/pw-browsers
+
 jobs:
   执行终端命令:
     runs-on: ubuntu-latest
@@ -27,13 +30,18 @@ jobs:
           cache: 'pip'
 
       - name: 安装 Python 依赖
-        run: |
-          pip install --upgrade pip
-          pip install playwright httpx
+        run: pip install playwright httpx --quiet
+
+      - name: 缓存 Playwright 浏览器
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          key: playwright-chromium-${{ runner.os }}
 
       - name: 安装 Playwright Chromium
-        run: |
-          playwright install chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: playwright install chromium
 
       - name: 执行终端脚本
         env:
@@ -42,7 +50,12 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
-          python terminal_script.py
+          for i in 1 2 3; do
+            echo "🚀 尝试 $i/3"
+            python terminal_script.py && exit 0
+            [ $i -lt 3 ] && sleep 10
+          done
+          exit 1
 
       - name: 清理工作流记录
         if: always()
@@ -53,10 +66,3 @@ jobs:
           delete_workflow_pattern: ${{ github.workflow }}
           retain_days: 0
           keep_minimum_runs: 3
-
-      - name: 失败通知
-        if: failure()
-        run: |
-          curl -s "https://api.telegram.org/bot${{ secrets.TG_BOT_TOKEN }}/sendMessage" \
-            -d chat_id=${{ secrets.TG_CHAT_ID }} \
-            -d text="Data Online 重启任务执行失败，请检查 GitHub Actions 日志"
