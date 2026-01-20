@@ -11,9 +11,6 @@ permissions:
   contents: read
   actions: write
 
-env:
-  PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/pw-browsers
-
 jobs:
   run_terminal:
     name: 执行终端命令
@@ -31,18 +28,13 @@ jobs:
           cache: 'pip'
 
       - name: 安装 Python 依赖
-        run: pip install playwright httpx --quiet
-
-      - name: 缓存 Playwright 浏览器
-        id: playwright-cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
-          key: playwright-chromium-${{ runner.os }}
+        run: |
+          pip install --upgrade pip
+          pip install playwright httpx
 
       - name: 安装 Playwright Chromium
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: playwright install chromium
+        run: |
+          playwright install chromium
 
       - name: 执行终端脚本
         env:
@@ -51,12 +43,7 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
-          for i in 1 2 3; do
-            echo "🚀 尝试 $i/3"
-            python scripts/data-online_renew.py && exit 0
-            [ $i -lt 3 ] && sleep 10
-          done
-          exit 1
+          python terminal_script.py
 
       - name: 清理工作流记录
         if: always()
