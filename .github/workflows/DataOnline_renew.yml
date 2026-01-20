@@ -29,7 +29,7 @@ jobs:
         env:
           DATA_USERNAME: ${{ secrets.DATA_USERNAME }}
           DATA_PASSWORD: ${{ secrets.DATA_PASSWORD }}
-        run: python terminal_script.py
+        run: python scripts/data-online_renew.py
       
       - name: Upload screenshots
         uses: actions/upload-artifact@v4
