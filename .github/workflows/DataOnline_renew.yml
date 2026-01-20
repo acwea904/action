@@ -43,7 +43,7 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
-          python terminal_script.py
+          python scripts/data-online_renew.py
 
       - name: 清理工作流记录
         if: always()
