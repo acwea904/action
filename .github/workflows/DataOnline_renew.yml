@@ -15,7 +15,8 @@ env:
   PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/pw-browsers
 
 jobs:
-  执行终端命令:
+  run_terminal:
+    name: 执行终端命令
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -52,7 +53,7 @@ jobs:
         run: |
           for i in 1 2 3; do
             echo "🚀 尝试 $i/3"
-            python terminal_script.py && exit 0
+            python scripts/data-online_renew.py && exit 0
             [ $i -lt 3 ] && sleep 10
           done
           exit 1
