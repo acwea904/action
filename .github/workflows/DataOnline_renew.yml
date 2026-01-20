@@ -1,35 +1,39 @@
 name: Data Online 执行重启
 
 on:
-  # 定时任务 - 每6小时运行一次
-  # schedule:
-  #  - cron: '0 */6 * * *'
-  # 手动触发
   workflow_dispatch:
+
+concurrency:
+  group: data-online-restart
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   执行终端命令:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    
+
     steps:
       - name: 拉取代码仓库
         uses: actions/checkout@v4
-      
+
       - name: 配置 Python 环境
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
-      - name: 安装依赖
+          cache: 'pip'
+
+      - name: 安装 Python 依赖
         run: |
-          echo "📦 正在安装依赖..."
+          pip install --upgrade pip
           pip install playwright httpx
-          echo "🌐 正在安装 Chromium 浏览器..."
+
+      - name: 安装 Playwright Chromium
+        run: |
           playwright install chromium
-          playwright install-deps chromium
-          echo "✅ 依赖安装完成"
-      
+
       - name: 执行终端脚本
         env:
           DATA_USERNAME: ${{ secrets.DATA_USERNAME }}
@@ -37,5 +41,11 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
-          echo "🚀 开始执行脚本..."
-          python terminal_script.py
+          python scripts/data-online_renew.py
+
+      - name: 失败通知
+        if: failure()
+        run: |
+          curl -s "https://api.telegram.org/bot${{ secrets.TG_BOT_TOKEN }}/sendMessage" \
+            -d chat_id=${{ secrets.TG_CHAT_ID }} \
+            -d text="Data Online 重启任务执行失败，请检查 GitHub Actions 日志"
