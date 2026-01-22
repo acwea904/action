@@ -70,7 +70,7 @@ jobs:
           
           PROXY_IP=$(curl -s --connect-timeout 10 --proxy socks5://127.0.0.1:1080 https://api.ipify.org)
           if [ -n "$PROXY_IP" ]; then
-            echo "✅ 代理连接成功，IP: $PROXY_IP"
+            echo "✅ 代理连接成功，IP: "
             echo "PROXY_IP=$PROXY_IP" >> $GITHUB_ENV
           else
             echo "❌ 代理连接失败"
