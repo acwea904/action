@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-KataBump 自动续订脚本
-"""
+"""KataBump 自动续订脚本"""
 
 import os
-import sys
 import re
 import asyncio
 import requests
@@ -54,7 +51,6 @@ def days_until(date_str):
 async def run():
     log(f'🚀 KataBump 自动续订 (服务器: {SERVER_ID})')
     server_url = f'{DASHBOARD_URL}/servers/edit?id={SERVER_ID}'
-    proxy_server = HTTP_PROXY if HTTP_PROXY else None
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -63,7 +59,7 @@ async def run():
         )
         
         context = await browser.new_context(
-            proxy={'server': proxy_server} if proxy_server else None,
+            proxy={'server': HTTP_PROXY} if HTTP_PROXY else None,
             viewport={'width': 1280, 'height': 900},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         )
@@ -94,95 +90,41 @@ async def run():
             old_expiry = get_expiry(await page.content()) or '未知'
             days = days_until(old_expiry)
             log(f'📅 当前到期: {old_expiry} (剩余 {days} 天)')
-            await page.screenshot(path=f'{SCREENSHOT_DIR}/server_page.png', full_page=True)
 
-            # 点击 Renew 按钮
+            # 点击 Renew 按钮打开模态框
             log('🖱 点击 Renew 按钮...')
-            renew_btn = page.locator('button:has-text("Renew")').first
-            await renew_btn.wait_for(state='visible', timeout=10000)
+            renew_btn = page.locator('button[data-bs-target*="renew"], a[data-bs-target*="renew"], button:has-text("Renew")').first
             await renew_btn.click()
-            
-            # 等待模态框
-            log('⏳ 等待模态框...')
             await page.wait_for_timeout(3000)
             
-            modal_visible = False
-            for i in range(10):
-                modal = page.locator('#renew-modal')
-                cls = await modal.get_attribute('class') or ''
-                if 'show' in cls:
-                    modal_visible = True
-                    log('✅ 模态框已打开')
-                    break
-                await page.wait_for_timeout(1000)
-                if i == 4:
-                    await renew_btn.click(force=True)
-            
-            if not modal_visible:
-                await page.screenshot(path=f'{SCREENSHOT_DIR}/modal_failed.png', full_page=True)
-                raise Exception('模态框未打开')
+            await page.screenshot(path=f'{SCREENSHOT_DIR}/modal.png', full_page=True)
 
-            await page.wait_for_timeout(3000)
-            await page.screenshot(path=f'{SCREENSHOT_DIR}/modal_opened.png', full_page=True)
-
-            # 点击 Turnstile
-            log('🖱 点击验证...')
-            try:
-                iframe = page.locator('iframe[src*="challenges.cloudflare"]').first
-                await iframe.wait_for(state='visible', timeout=10000)
-                box = await iframe.bounding_box()
-                if box:
-                    await page.mouse.click(box['x'] + 30, box['y'] + 30)
-                    log('✅ 已点击验证区域')
-            except Exception as e:
-                log(f'⚠️ 点击验证: {e}')
-
-            # 等待验证完成
-            log('⏳ 等待验证完成...')
-            response_input = page.locator('input[name="cf-turnstile-response"]')
-            
-            verified = False
+            # 等待 Turnstile 验证完成
+            log('⏳ 等待验证...')
             for i in range(60):
                 await page.wait_for_timeout(1000)
-                if await response_input.count() > 0:
-                    val = await response_input.get_attribute('value') or ''
-                    if len(val) > 20:
-                        log(f'✅ 验证成功 ({i+1}秒)')
-                        verified = True
-                        break
-                if i % 15 == 14:
+                val = await page.locator('input[name="cf-turnstile-response"]').get_attribute('value') or ''
+                if len(val) > 20:
+                    log(f'✅ 验证完成 ({i+1}秒)')
+                    break
+                if i % 10 == 9:
                     log(f'⏳ 等待中... ({i+1}秒)')
-                    await page.screenshot(path=f'{SCREENSHOT_DIR}/waiting_{i+1}.png', full_page=True)
+            else:
+                raise Exception('验证超时')
 
-            if not verified:
-                log('❌ 验证超时')
-                await page.screenshot(path=f'{SCREENSHOT_DIR}/verify_failed.png', full_page=True)
-                if days and days <= 3:
-                    tg_notify_photo(f'{SCREENSHOT_DIR}/verify_failed.png', 
-                                    f'⚠️ 需要手动续订\n服务器: {SERVER_ID}\n到期: {old_expiry}\n👉 {server_url}')
-                return
-
-            # 提交
-            log('🖱 点击确认...')
-            submit_btn = page.locator('#renew-modal button:has-text("Renew")').last
-            await submit_btn.click()
+            # 提交表单
+            log('🖱 提交续订...')
+            await page.locator('.modal.show form[action*="renew"] button[type="submit"], .modal.show button:has-text("Renew")').click()
             await page.wait_for_timeout(5000)
 
             # 检查结果
             await page.screenshot(path=f'{SCREENSHOT_DIR}/result.png', full_page=True)
             
-            if 'renew=success' in page.url:
-                new_expiry = get_expiry(await page.content()) or '未知'
+            new_expiry = get_expiry(await page.content()) or '未知'
+            if 'success' in page.url.lower() or new_expiry != old_expiry:
                 log(f'🎉 续订成功！新到期: {new_expiry}')
                 tg_notify_photo(f'{SCREENSHOT_DIR}/result.png', f'✅ 续订成功\n新到期: {new_expiry}')
-            elif 'renew-error' in page.url:
-                from urllib.parse import unquote
-                m = re.search(r'renew-error=([^&]+)', page.url)
-                err = unquote(m.group(1).replace('+', ' ')) if m else '未知'
-                log(f'⚠️ 续订受限: {err}')
             else:
-                await page.goto(server_url, timeout=60000)
-                new_expiry = get_expiry(await page.content()) or '未知'
                 log(f'ℹ️ 到期时间: {new_expiry}')
 
         except Exception as e:
