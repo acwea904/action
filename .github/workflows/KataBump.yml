@@ -16,6 +16,8 @@ jobs:
       
       - name: 安装依赖
         run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
           pip install playwright requests
           playwright install chromium
           playwright install-deps chromium
@@ -67,7 +69,7 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           SCREENSHOT_DIR: /tmp
           HTTP_PROXY: http://127.0.0.1:8080
-        run: python scripts/katabump_renew.py
+        run: xvfb-run --auto-servernum python scripts/katabump_renew.py
       
       - name: 上传截图
         if: always()
