@@ -5,7 +5,9 @@
 import os
 import re
 import asyncio
+import urllib.parse
 import requests
+import httpx
 from datetime import datetime, timezone, timedelta
 from playwright.async_api import async_playwright
 
@@ -91,48 +93,42 @@ async def run():
             days = days_until(old_expiry)
             log(f'📅 当前到期: {old_expiry} (剩余 {days} 天)')
 
-            # 点击 Renew 按钮打开模态框
-            log('🖱 点击 Renew 按钮...')
-            await page.locator('button[data-bs-target="#renew-modal"]').click()
-            await page.wait_for_timeout(2000)
+            # 直接调用 API 续订
+            log('🔄 调用续订 API...')
+            cookies = await context.cookies()
+            cookie_str = '; '.join([f"{c['name']}={c['value']}" for c in cookies])
+            
+            async with httpx.AsyncClient(proxy=HTTP_PROXY or None, verify=False) as client:
+                resp = await client.post(
+                    f'{DASHBOARD_URL}/api-client/renew?id={SERVER_ID}',
+                    headers={
+                        'Cookie': cookie_str,
+                        'Origin': DASHBOARD_URL,
+                        'Referer': server_url,
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    },
+                    follow_redirects=False
+                )
+                
+                location = resp.headers.get('location', '')
+                if 'renew-error' in location:
+                    error = urllib.parse.unquote(location.split('renew-error=')[1].split('&')[0])
+                    log(f'⚠️ {error}')
+                else:
+                    log('✅ API 调用成功')
 
-            # 等待模态框出现
-            await page.wait_for_selector('#renew-modal.show', timeout=10000)
-            log('✅ 模态框已打开')
-
-            await page.screenshot(path=f'{SCREENSHOT_DIR}/modal.png', full_page=True)
-
-            # 等待 Turnstile 验证完成
-            log('⏳ 等待验证...')
-            for i in range(60):
-                await page.wait_for_timeout(1000)
-                try:
-                    val = await page.locator('#renew-modal input[name="cf-turnstile-response"]').get_attribute('value', timeout=1000) or ''
-                    if len(val) > 20:
-                        log(f'✅ 验证完成 ({i+1}秒)')
-                        break
-                except:
-                    pass
-                if i % 10 == 9:
-                    log(f'⏳ 等待中... ({i+1}秒)')
-            else:
-                raise Exception('验证超时')
-
-            # 提交表单
-            log('🖱 提交续订...')
-            await page.locator('#renew-modal form button[type="submit"], #renew-modal button.btn-primary').first.click()
-            await page.wait_for_timeout(5000)
-
-
-            # 检查结果
+            # 刷新页面检查结果
+            await page.reload()
+            await page.wait_for_timeout(3000)
             await page.screenshot(path=f'{SCREENSHOT_DIR}/result.png', full_page=True)
             
             new_expiry = get_expiry(await page.content()) or '未知'
-            if 'success' in page.url.lower() or new_expiry != old_expiry:
+            if new_expiry != old_expiry:
                 log(f'🎉 续订成功！新到期: {new_expiry}')
                 tg_notify_photo(f'{SCREENSHOT_DIR}/result.png', f'✅ 续订成功\n新到期: {new_expiry}')
             else:
                 log(f'ℹ️ 到期时间: {new_expiry}')
+                tg_notify_photo(f'{SCREENSHOT_DIR}/result.png', f'ℹ️ 到期: {new_expiry}')
 
         except Exception as e:
             log(f'❌ 错误: {e}')
