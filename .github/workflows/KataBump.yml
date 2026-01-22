@@ -52,7 +52,7 @@ jobs:
             listen: 127.0.0.1:8080
           EOF
 
-      - name: Start proxy
+      - name: 启动代理
         run: |
           ./hysteria client -c hy2-config.yaml > /dev/null 2>&1 &
           sleep 3
@@ -62,10 +62,11 @@ jobs:
         env:
           KATA_EMAIL: ${{ secrets.KATA_EMAIL }}
           KATA_PASSWORD: ${{ secrets.KATA_PASSWORD }}
+          KATA_SERVER_ID: ${{ secrets.KATA_SERVER_ID }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           SCREENSHOT_DIR: /tmp
-          PROXY_SERVER: socks5://127.0.0.1:1080
+          HTTP_PROXY: http://127.0.0.1:8080
         run: python scripts/katabump_renew.py
       
       - name: 上传截图
