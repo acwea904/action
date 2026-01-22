@@ -157,21 +157,36 @@ async def run():
             await refresh_cf_cookie(context)
             page = await context.new_page()
             
-            # 登录
+            # 登录 - 使用 POST 请求
             log('🔐 登录...')
             await page.goto(f'{DASHBOARD_URL}/auth/login', timeout=60000)
-            await page.locator('input[name="email"]').fill(KATA_EMAIL)
-            await page.locator('input[name="password"]').fill(KATA_PASSWORD)
-            await page.locator('button[type="submit"]').first.click()
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(1000)
+            
+            # 通过 page.request 发送 POST
+            response = await page.request.post(
+                f'{DASHBOARD_URL}/auth/login',
+                form={
+                    'email': KATA_EMAIL,
+                    'password': KATA_PASSWORD,
+                    'remember': 'true'
+                },
+                headers={
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Origin': DASHBOARD_URL,
+                    'Referer': f'{DASHBOARD_URL}/auth/login',
+                }
+            )
+            
+            # 刷新页面获取登录状态
+            await page.goto(f'{DASHBOARD_URL}/servers', timeout=60000)
+            await page.wait_for_timeout(2000)
             
             if '/auth/login' in page.url:
+                await page.screenshot(path=f'{SCREENSHOT_DIR}/login_failed.png', full_page=True)
                 raise Exception('登录失败')
             log('✅ 登录成功')
             
             # 获取服务器列表
-            await page.goto(f'{DASHBOARD_URL}/servers', timeout=60000)
-            await page.wait_for_timeout(2000)
             servers = parse_servers(await page.content())
             log(f'📦 找到 {len(servers)} 个服务器')
             
