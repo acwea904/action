@@ -17,7 +17,7 @@ jobs:
           python-version: '3.11'
 
       # =========================
-      # 下载并配置 Hysteria2
+      # Hysteria2
       # =========================
       - name: 下载 Hysteria2
         run: |
@@ -62,9 +62,8 @@ jobs:
       - name: 启动 Hysteria2
         run: |
           ./hysteria client -c hy2-config.yaml &
-          echo "HY2_PID=$!" >> $GITHUB_ENV
           sleep 5
-
+          echo "🌍 当前出口 IP:"
           curl --proxy socks5://127.0.0.1:1080 https://api.ipify.org
 
       # =========================
@@ -84,12 +83,10 @@ jobs:
           KATA_EMAIL: ${{ secrets.KATA_EMAIL }}
           KATA_PASSWORD: ${{ secrets.KATA_PASSWORD }}
           KATA_SERVER_ID: ${{ secrets.KATA_SERVER_ID }}
-          CAPSOLVER_KEY: ${{ secrets.CAPSOLVER_KEY }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           SCREENSHOT_DIR: /tmp
-        run: |
-          python scripts/katabump_renew.py
+        run: python scripts/katabump_renew.py
 
       - name: 上传截图
         if: always()
