@@ -91,6 +91,37 @@ async def run():
             days = days_until(old_expiry)
             log(f'📅 当前到期: {old_expiry} (剩余 {days} 天)')
 
+            # 登录后直接调用 API
+            async def renew_via_api(page, server_id: str):
+                cookies = await page.context.cookies()
+                cookie_str = '; '.join([f"{c['name']}={c['value']}" for c in cookies])
+    
+                async with httpx.AsyncClient(proxy=PROXY, verify=False) as client:
+                    resp = await client.post(
+                        f'{BASE_URL}/api-client/renew?id={server_id}',
+                        headers={
+                            'Cookie': cookie_str,
+                            'Origin': BASE_URL,
+                            'Referer': f'{BASE_URL}/servers/edit?id={server_id}',
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                        },
+                        follow_redirects=False
+                    )
+        
+                    if resp.status_code == 302:
+                        location = resp.headers.get('location', '')
+                        if 'renew-error' in location:
+                            # 解析错误信息
+                            import urllib.parse
+                            error = urllib.parse.unquote(location.split('renew-error=')[1].split('&')[0])
+                            log(f'⚠️ {error}')
+                            return False
+                        elif 'renew-success' in location or 'success' in location:
+                            log('✅ 续订成功')
+                            return True
+        
+                    return resp.status_code == 200
+
             # 点击 Renew 按钮打开模态框
             log('🖱 点击 Renew 按钮...')
             await page.locator('button[data-bs-target="#renew-modal"]').click()
