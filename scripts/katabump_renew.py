@@ -103,7 +103,7 @@ async def run():
             log('⏳ 等待验证...')
             for i in range(60):
                 await page.wait_for_timeout(1000)
-                val = await page.locator('input[name="cf-turnstile-response"]').get_attribute('value') or ''
+                val = await page.locator('.modal.show input[name="cf-turnstile-response"]').get_attribute('value') or ''
                 if len(val) > 20:
                     log(f'✅ 验证完成 ({i+1}秒)')
                     break
