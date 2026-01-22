@@ -93,36 +93,41 @@ async def run():
             days = days_until(old_expiry)
             log(f'📅 当前到期: {old_expiry} (剩余 {days} 天)')
 
-# 调用 API 续订
-log('🔄 调用续订 API...')
-cookies = await context.cookies()
-cookie_str = '; '.join([f"{c['name']}={c['value']}" for c in cookies])
-
-async with httpx.AsyncClient(proxy=HTTP_PROXY or None, verify=False) as client:
-    resp = await client.post(
-        f'{DASHBOARD_URL}/api-client/renew?id={SERVER_ID}',
-        headers={
-            'Cookie': cookie_str,
-            'Origin': DASHBOARD_URL,
-            'Referer': server_url,
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
-        follow_redirects=False
-    )
-    
-    log(f'📡 状态码: {resp.status_code}')
-    log(f'📡 Headers: {dict(resp.headers)}')
-    
-    location = resp.headers.get('location', '')
-    
-    if 'renew-error' in location:
-        error = urllib.parse.unquote(location.split('renew-error=')[1].split('&')[0])
-        log(f'⚠️ {error}')
-    elif 'renew-success' in location or (resp.status_code == 302 and 'renew-error' not in location):
-        log('✅ 续订成功')
-    else:
-        log(f'⚠️ 未知响应: {resp.status_code}, location: {location}')
-
+            # 调用 API 续订
+            log('🔄 调用续订 API...')
+            cookies = await context.cookies()
+            cookie_str = '; '.join([f"{c['name']}={c['value']}" for c in cookies])
+            
+            async with httpx.AsyncClient(proxy=HTTP_PROXY or None, verify=False) as client:
+                resp = await client.post(
+                    f'{DASHBOARD_URL}/api-client/renew?id={SERVER_ID}',
+                    headers={
+                        'Cookie': cookie_str,
+                        'Origin': DASHBOARD_URL,
+                        'Referer': server_url,
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    },
+                    follow_redirects=False
+                )
+                
+                log(f'📡 状态码: {resp.status_code}')
+                log(f'📡 Headers: {dict(resp.headers)}')
+                
+                location = resp.headers.get('location', '')
+                
+                if 'renew-error' in location:
+                    error = urllib.parse.unquote(location.split('renew-error=')[1].split('&')[0])
+                    m = re.search(r'in (\d+) day', error)
+                    if m:
+                        log(f'⚠️ 还需等待 {m.group(1)} 天才能续订')
+                    else:
+                        log(f'⚠️ {error}')
+                    await page.screenshot(path=f'{SCREENSHOT_DIR}/result.png', full_page=True)
+                    tg_notify_photo(f'{SCREENSHOT_DIR}/result.png', f'⚠️ {error}')
+                elif 'renew-success' in location:
+                    log('✅ 续订成功')
+                else:
+                    log(f'⚠️ 未知响应: location={location}')
 
             # 刷新页面检查结果
             await page.reload()
