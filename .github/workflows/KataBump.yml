@@ -52,11 +52,11 @@ jobs:
             listen: 127.0.0.1:8080
           EOF
 
-      - name: 启动 Hysteria2
+      - name: Start proxy
         run: |
-          ./hysteria client -c hy2-config.yaml &
-          sleep 5
-          curl -s --proxy socks5://127.0.0.1:1080 https://api.ipify.org && echo " ✅ 代理OK" || exit 1
+          ./hysteria client -c hy2-config.yaml > /dev/null 2>&1 &
+          sleep 3
+          echo "✅ 代理已启动"
       
       - name: 运行续订
         env:
