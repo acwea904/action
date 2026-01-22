@@ -48,16 +48,16 @@ jobs:
           [ "$INSECURE" = "1" ] && INSECURE="true" || INSECURE="false"
 
           cat > hy2-config.yaml << EOF
-server: ${SERVER}
-auth: ${PASSWORD}
-tls:
-  sni: ${SNI}
-  insecure: ${INSECURE}
-socks5:
-  listen: 127.0.0.1:1080
-http:
-  listen: 127.0.0.1:8080
-EOF
+          server: ${SERVER}
+          auth: ${PASSWORD}
+          tls:
+            sni: ${SNI}
+            insecure: ${INSECURE}
+          socks5:
+            listen: 127.0.0.1:1080
+          http:
+            listen: 127.0.0.1:8080
+          EOF
 
       - name: 启动 Hysteria2
         run: |
