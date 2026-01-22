@@ -18,7 +18,7 @@ jobs:
       
       - name: 安装依赖
         run: |
-          pip install playwright requests
+          pip install playwright requests pysocks
           playwright install chromium
           playwright install-deps chromium
 
@@ -70,7 +70,7 @@ jobs:
           
           PROXY_IP=$(curl -s --connect-timeout 10 --proxy socks5://127.0.0.1:1080 https://api.ipify.org)
           if [ -n "$PROXY_IP" ]; then
-            echo "✅ 代理连接成功，IP: "
+            echo "✅ 代理连接成功"
             echo "PROXY_IP=$PROXY_IP" >> $GITHUB_ENV
           else
             echo "❌ 代理连接失败"
@@ -86,16 +86,12 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           SCREENSHOT_DIR: /tmp
-          # 代理配置
           PROXY_SERVER: "socks5://127.0.0.1:1080"
         run: python scripts/katabump_renew.py
 
       - name: 停止代理
         if: always()
-        run: |
-          if [ -n "$HY2_PID" ]; then
-            kill $HY2_PID 2>/dev/null || true
-          fi
+        run: kill $HY2_PID 2>/dev/null || true
       
       - name: 上传截图
         if: always()
