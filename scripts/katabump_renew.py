@@ -56,7 +56,7 @@ async def run():
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-            headless=False,
+            headless=True,
             args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
         )
         
@@ -87,19 +87,19 @@ async def run():
             # 打开服务器页面
             log('📄 打开服务器页面')
             await page.goto(server_url, timeout=60000, wait_until='domcontentloaded')
-            await page.wait_for_timeout(5000)
+            await page.wait_for_timeout(3000)
             
             old_expiry = get_expiry(await page.content()) or '未知'
             days = days_until(old_expiry)
             log(f'📅 当前到期: {old_expiry} (剩余 {days} 天)')
 
-            # 直接调用 API 续订
+            # 调用 API 续订
             log('🔄 调用续订 API...')
             cookies = await context.cookies()
             cookie_str = '; '.join([f"{c['name']}={c['value']}" for c in cookies])
             
             async with httpx.AsyncClient(proxy=HTTP_PROXY or None, verify=False) as client:
-                resp = await client.post(
+                await client.post(
                     f'{DASHBOARD_URL}/api-client/renew?id={SERVER_ID}',
                     headers={
                         'Cookie': cookie_str,
@@ -109,25 +109,25 @@ async def run():
                     },
                     follow_redirects=False
                 )
-                
-                location = resp.headers.get('location', '')
-                if 'renew-error' in location:
-                    error = urllib.parse.unquote(location.split('renew-error=')[1].split('&')[0])
-                    log(f'⚠️ {error}')
-                else:
-                    log('✅ API 调用成功')
 
             # 刷新页面检查结果
             await page.reload()
             await page.wait_for_timeout(3000)
             await page.screenshot(path=f'{SCREENSHOT_DIR}/result.png', full_page=True)
             
-            new_expiry = get_expiry(await page.content()) or '未知'
-            if new_expiry != old_expiry:
-                log(f'🎉 续订成功！新到期: {new_expiry}')
-                tg_notify_photo(f'{SCREENSHOT_DIR}/result.png', f'✅ 续订成功\n新到期: {new_expiry}')
+            content = await page.content()
+            new_expiry = get_expiry(content) or '未知'
+
+            # 检查页面提示
+            if await page.locator('.alert-danger').count() > 0:
+                msg = (await page.locator('.alert-danger').first.text_content()).strip()
+                log(f'⚠️ {msg}')
+                tg_notify_photo(f'{SCREENSHOT_DIR}/result.png', f'⚠️ {msg}')
+            elif new_expiry != old_expiry:
+                log(f'🎉 续订成功！{old_expiry} → {new_expiry}')
+                tg_notify_photo(f'{SCREENSHOT_DIR}/result.png', f'✅ 续订成功\n{old_expiry} → {new_expiry}')
             else:
-                log(f'ℹ️ 到期时间: {new_expiry}')
+                log(f'ℹ️ 到期: {new_expiry}')
                 tg_notify_photo(f'{SCREENSHOT_DIR}/result.png', f'ℹ️ 到期: {new_expiry}')
 
         except Exception as e:
