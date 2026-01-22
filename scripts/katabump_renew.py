@@ -63,16 +63,9 @@ async def run():
         log(f'🌐 使用代理: {proxy_server}')
 
     async with async_playwright() as p:
-        # 使用 channel chrome 更接近真实浏览器
         browser = await p.chromium.launch(
-            headless=False,  # 使用有头模式
-            args=[
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-blink-features=AutomationControlled',
-                '--disable-infobars',
-                '--window-size=1280,900',
-            ]
+            headless=False,
+            args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
         )
         
         context = await browser.new_context(
@@ -80,23 +73,12 @@ async def run():
             viewport={'width': 1280, 'height': 900},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             locale='en-US',
-            timezone_id='America/New_York',
         )
         
         page = await context.new_page()
-        
-        # 更完整的反检测
         await page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
-            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
             window.chrome = {runtime: {}};
-            const originalQuery = window.navigator.permissions.query;
-            window.navigator.permissions.query = (parameters) => (
-                parameters.name === 'notifications' ?
-                    Promise.resolve({state: Notification.permission}) :
-                    originalQuery(parameters)
-            );
         """)
         
         try:
@@ -111,56 +93,61 @@ async def run():
             await page.wait_for_timeout(4000)
             
             if '/auth/login' in page.url:
-                await page.screenshot(path=f'{SCREENSHOT_DIR}/login_failed.png', full_page=True)
                 raise Exception('登录失败')
             log('✅ 登录成功')
 
             # 打开服务器页面
             log('📄 打开服务器页面')
-            await page.goto(server_url, timeout=60000, wait_until='domcontentloaded')
+            await page.goto(server_url, timeout=60000, wait_until='networkidle')
             await page.wait_for_timeout(3000)
             
-            page_content = await page.content()
-            old_expiry = get_expiry(page_content) or '未知'
+            old_expiry = get_expiry(await page.content()) or '未知'
             days = days_until(old_expiry)
             log(f'📅 当前到期: {old_expiry} (剩余 {days} 天)')
 
-            # 点击 Renew
+            # 点击 Renew 按钮
             log('🖱 点击 Renew 按钮...')
-            renew_btn = page.locator('button[data-bs-target="#renew-modal"], button:has-text("Renew")').first
-            await renew_btn.click()
-            await page.wait_for_timeout(2000)
-
-            # 等待模态框
-            modal = page.locator('#renew-modal')
-            await modal.wait_for(state='visible', timeout=5000)
-            log('✅ 模态框已打开')
-
-            # 等待 Turnstile 加载
-            await page.wait_for_timeout(3000)
+            renew_btn = page.locator('button[data-bs-target="#renew-modal"]')
+            if await renew_btn.count() == 0:
+                renew_btn = page.locator('button:has-text("Renew")').first
             
-            # 点击 Turnstile checkbox
-            log('🖱 点击验证 checkbox...')
+            await renew_btn.scroll_into_view_if_needed()
+            await page.wait_for_timeout(500)
+            await renew_btn.click()
+            
+            # 等待模态框显示
+            log('⏳ 等待模态框...')
+            for i in range(10):
+                await page.wait_for_timeout(1000)
+                modal = page.locator('#renew-modal.show, #renew-modal[style*="display: block"]')
+                if await modal.count() > 0:
+                    log('✅ 模态框已打开')
+                    break
+                if i == 4:
+                    # 再次尝试点击
+                    log('🔄 重试点击...')
+                    await renew_btn.click(force=True)
+            else:
+                await page.screenshot(path=f'{SCREENSHOT_DIR}/modal_failed.png', full_page=True)
+                raise Exception('模态框未打开')
+
+            await page.wait_for_timeout(3000)
+            await page.screenshot(path=f'{SCREENSHOT_DIR}/modal_opened.png', full_page=True)
+
+            # 点击 Turnstile
+            log('🖱 点击验证...')
             try:
-                # 方法1: 直接点击 iframe 内的 checkbox
-                turnstile_box = page.frame_locator('iframe[src*="challenges.cloudflare"]').locator('body')
-                await turnstile_box.click(position={'x': 28, 'y': 28})
-                log('✅ 已点击 Turnstile')
+                iframe = page.locator('iframe[src*="challenges.cloudflare"]').first
+                box = await iframe.bounding_box()
+                if box:
+                    await page.mouse.click(box['x'] + 30, box['y'] + 30)
+                    log('✅ 已点击验证区域')
             except Exception as e:
-                log(f'⚠️ 点击方法1失败: {e}')
-                try:
-                    # 方法2: 点击 iframe 元素位置
-                    iframe = page.locator('#renew-modal iframe[src*="challenges.cloudflare"]').first
-                    box = await iframe.bounding_box()
-                    if box:
-                        await page.mouse.click(box['x'] + 28, box['y'] + 28)
-                        log('✅ 已点击 Turnstile (方法2)')
-                except Exception as e2:
-                    log(f'⚠️ 点击方法2失败: {e2}')
+                log(f'⚠️ 点击验证: {e}')
 
             # 等待验证完成
             log('⏳ 等待验证完成...')
-            response_input = page.locator('#renew-modal input[name="cf-turnstile-response"]')
+            response_input = page.locator('input[name="cf-turnstile-response"]')
             
             verified = False
             for i in range(60):
@@ -184,20 +171,19 @@ async def run():
                 return
 
             # 提交
-            log('🖱 点击确认 Renew...')
+            log('🖱 点击确认...')
             submit_btn = page.locator('#renew-modal button:has-text("Renew")').last
             await submit_btn.click()
             await page.wait_for_timeout(5000)
 
             # 检查结果
-            log('🔍 检查结果...')
             await page.screenshot(path=f'{SCREENSHOT_DIR}/result.png', full_page=True)
             
             if 'renew=success' in page.url:
                 new_expiry = get_expiry(await page.content()) or '未知'
                 log(f'🎉 续订成功！新到期: {new_expiry}')
                 tg_notify_photo(f'{SCREENSHOT_DIR}/result.png', 
-                                f'✅ KataBump 续订成功\n服务器: {SERVER_ID}\n原到期: {old_expiry}\n新到期: {new_expiry}')
+                                f'✅ 续订成功\n服务器: {SERVER_ID}\n新到期: {new_expiry}')
             elif 'renew-error' in page.url:
                 from urllib.parse import unquote
                 m = re.search(r'renew-error=([^&]+)', page.url)
@@ -205,12 +191,9 @@ async def run():
                 log(f'⚠️ 续订受限: {err}')
             else:
                 await page.goto(server_url, timeout=60000)
-                await page.wait_for_timeout(3000)
                 new_expiry = get_expiry(await page.content()) or '未知'
                 if new_expiry > old_expiry:
                     log(f'🎉 续订成功！新到期: {new_expiry}')
-                    tg_notify_photo(f'{SCREENSHOT_DIR}/result.png', 
-                                    f'✅ KataBump 续订成功\n服务器: {SERVER_ID}\n原到期: {old_expiry}\n新到期: {new_expiry}')
                 else:
                     log(f'ℹ️ 到期时间: {new_expiry}')
 
@@ -230,11 +213,6 @@ def main():
     log('=' * 50)
     log('   KataBump 自动续订')
     log('=' * 50)
-    
-    if not KATA_EMAIL or not KATA_PASSWORD or not SERVER_ID:
-        log('❌ 请设置环境变量')
-        sys.exit(1)
-    
     log(f'📧 邮箱: {KATA_EMAIL[:3]}***')
     log(f'🖥 服务器: {SERVER_ID}')
     log(f'🌐 代理: {HTTP_PROXY or "未配置"}')
