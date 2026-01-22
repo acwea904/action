@@ -53,14 +53,8 @@ def days_until(date_str):
 
 async def run():
     log(f'🚀 KataBump 自动续订 (服务器: {SERVER_ID})')
-    if not SERVER_ID:
-        raise Exception('未设置 KATA_SERVER_ID')
-
     server_url = f'{DASHBOARD_URL}/servers/edit?id={SERVER_ID}'
     proxy_server = HTTP_PROXY if HTTP_PROXY else None
-    
-    if proxy_server:
-        log(f'🌐 使用代理: {proxy_server}')
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -72,14 +66,10 @@ async def run():
             proxy={'server': proxy_server} if proxy_server else None,
             viewport={'width': 1280, 'height': 900},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            locale='en-US',
         )
         
         page = await context.new_page()
-        await page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            window.chrome = {runtime: {}};
-        """)
+        await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
         
         try:
             # 登录
@@ -98,36 +88,37 @@ async def run():
 
             # 打开服务器页面
             log('📄 打开服务器页面')
-            await page.goto(server_url, timeout=60000, wait_until='networkidle')
-            await page.wait_for_timeout(3000)
+            await page.goto(server_url, timeout=60000, wait_until='domcontentloaded')
+            await page.wait_for_timeout(5000)
             
             old_expiry = get_expiry(await page.content()) or '未知'
             days = days_until(old_expiry)
             log(f'📅 当前到期: {old_expiry} (剩余 {days} 天)')
+            await page.screenshot(path=f'{SCREENSHOT_DIR}/server_page.png', full_page=True)
 
             # 点击 Renew 按钮
             log('🖱 点击 Renew 按钮...')
-            renew_btn = page.locator('button[data-bs-target="#renew-modal"]')
-            if await renew_btn.count() == 0:
-                renew_btn = page.locator('button:has-text("Renew")').first
-            
-            await renew_btn.scroll_into_view_if_needed()
-            await page.wait_for_timeout(500)
+            renew_btn = page.locator('button:has-text("Renew")').first
+            await renew_btn.wait_for(state='visible', timeout=10000)
             await renew_btn.click()
             
-            # 等待模态框显示
+            # 等待模态框
             log('⏳ 等待模态框...')
+            await page.wait_for_timeout(3000)
+            
+            modal_visible = False
             for i in range(10):
-                await page.wait_for_timeout(1000)
-                modal = page.locator('#renew-modal.show, #renew-modal[style*="display: block"]')
-                if await modal.count() > 0:
+                modal = page.locator('#renew-modal')
+                cls = await modal.get_attribute('class') or ''
+                if 'show' in cls:
+                    modal_visible = True
                     log('✅ 模态框已打开')
                     break
+                await page.wait_for_timeout(1000)
                 if i == 4:
-                    # 再次尝试点击
-                    log('🔄 重试点击...')
                     await renew_btn.click(force=True)
-            else:
+            
+            if not modal_visible:
                 await page.screenshot(path=f'{SCREENSHOT_DIR}/modal_failed.png', full_page=True)
                 raise Exception('模态框未打开')
 
@@ -138,6 +129,7 @@ async def run():
             log('🖱 点击验证...')
             try:
                 iframe = page.locator('iframe[src*="challenges.cloudflare"]').first
+                await iframe.wait_for(state='visible', timeout=10000)
                 box = await iframe.bounding_box()
                 if box:
                     await page.mouse.click(box['x'] + 30, box['y'] + 30)
@@ -182,8 +174,7 @@ async def run():
             if 'renew=success' in page.url:
                 new_expiry = get_expiry(await page.content()) or '未知'
                 log(f'🎉 续订成功！新到期: {new_expiry}')
-                tg_notify_photo(f'{SCREENSHOT_DIR}/result.png', 
-                                f'✅ 续订成功\n服务器: {SERVER_ID}\n新到期: {new_expiry}')
+                tg_notify_photo(f'{SCREENSHOT_DIR}/result.png', f'✅ 续订成功\n新到期: {new_expiry}')
             elif 'renew-error' in page.url:
                 from urllib.parse import unquote
                 m = re.search(r'renew-error=([^&]+)', page.url)
@@ -192,10 +183,7 @@ async def run():
             else:
                 await page.goto(server_url, timeout=60000)
                 new_expiry = get_expiry(await page.content()) or '未知'
-                if new_expiry > old_expiry:
-                    log(f'🎉 续订成功！新到期: {new_expiry}')
-                else:
-                    log(f'ℹ️ 到期时间: {new_expiry}')
+                log(f'ℹ️ 到期时间: {new_expiry}')
 
         except Exception as e:
             log(f'❌ 错误: {e}')
@@ -216,7 +204,6 @@ def main():
     log(f'📧 邮箱: {KATA_EMAIL[:3]}***')
     log(f'🖥 服务器: {SERVER_ID}')
     log(f'🌐 代理: {HTTP_PROXY or "未配置"}')
-    
     asyncio.run(run())
     log('🏁 完成')
 
