@@ -5,9 +5,7 @@
 import os
 import re
 import asyncio
-import urllib.parse
 import requests
-import httpx
 from datetime import datetime, timezone, timedelta
 from playwright.async_api import async_playwright
 
@@ -93,30 +91,28 @@ async def run():
             days = days_until(old_expiry)
             log(f'📅 当前到期: {old_expiry} (剩余 {days} 天)')
 
-            # 调用 API 续订
-            log('🔄 调用续订 API...')
-            cookies = await context.cookies()
-            cookie_str = '; '.join([f"{c['name']}={c['value']}" for c in cookies])
+            # 点击 Renew 按钮
+            log('🔄 点击 Renew 按钮...')
+            renew_btn = page.locator('a:has-text("Renew"), button:has-text("Renew")').first
             
-            async with httpx.AsyncClient(proxy=HTTP_PROXY or None, verify=False) as client:
-                resp = await client.post(
-                    f'{DASHBOARD_URL}/api-client/renew?id={SERVER_ID}',
-                    headers={
-                        'Cookie': cookie_str,
-                        'Origin': DASHBOARD_URL,
-                        'Referer': server_url,
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    },
-                    follow_redirects=False
-                )
+            if await renew_btn.count() == 0:
+                log('⚠️ 未找到 Renew 按钮')
+                await page.screenshot(path=f'{SCREENSHOT_DIR}/no_button.png', full_page=True)
+                tg_notify_photo(f'{SCREENSHOT_DIR}/no_button.png', '⚠️ 未找到 Renew 按钮')
+            else:
+                await renew_btn.click()
+                await page.wait_for_timeout(5000)
                 
-                log(f'📡 状态码: {resp.status_code}')
-                log(f'📡 Headers: {dict(resp.headers)}')
+                # 检查结果
+                current_url = page.url
+                content = await page.content()
                 
-                location = resp.headers.get('location', '')
+                log(f'📡 当前 URL: {current_url}')
                 
-                if 'renew-error' in location:
-                    error = urllib.parse.unquote(location.split('renew-error=')[1].split('&')[0])
+                # 检查错误信息
+                if 'renew-error' in current_url:
+                    import urllib.parse
+                    error = urllib.parse.unquote(current_url.split('renew-error=')[1].split('&')[0])
                     m = re.search(r'in (\d+) day', error)
                     if m:
                         log(f'⚠️ 还需等待 {m.group(1)} 天才能续订')
@@ -124,22 +120,18 @@ async def run():
                         log(f'⚠️ {error}')
                     await page.screenshot(path=f'{SCREENSHOT_DIR}/result.png', full_page=True)
                     tg_notify_photo(f'{SCREENSHOT_DIR}/result.png', f'⚠️ {error}')
-                elif 'renew-success' in location:
+                elif 'renew-success' in current_url:
                     log('✅ 续订成功')
                 else:
-                    log(f'⚠️ 未知响应: location={location}')
-
-            # 刷新页面检查结果
-            await page.reload()
-            await page.wait_for_timeout(3000)
-            await page.screenshot(path=f'{SCREENSHOT_DIR}/result.png', full_page=True)
-            
-            new_expiry = get_expiry(await page.content()) or '未知'
-            if new_expiry != old_expiry:
-                log(f'🎉 续订成功！{old_expiry} → {new_expiry}')
-                tg_notify_photo(f'{SCREENSHOT_DIR}/result.png', f'✅ 续订成功\n{old_expiry} → {new_expiry}')
-            else:
-                log(f'ℹ️ 到期时间: {new_expiry}')
+                    # 检查页面内容
+                    new_expiry = get_expiry(content) or '未知'
+                    if new_expiry != old_expiry:
+                        log(f'🎉 续订成功！{old_expiry} → {new_expiry}')
+                        await page.screenshot(path=f'{SCREENSHOT_DIR}/result.png', full_page=True)
+                        tg_notify_photo(f'{SCREENSHOT_DIR}/result.png', f'✅ 续订成功\n{old_expiry} → {new_expiry}')
+                    else:
+                        log(f'ℹ️ 到期时间未变: {new_expiry}')
+                        await page.screenshot(path=f'{SCREENSHOT_DIR}/result.png', full_page=True)
 
         except Exception as e:
             log(f'❌ 错误: {e}')
