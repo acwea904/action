@@ -93,24 +93,33 @@ async def run():
 
             # 点击 Renew 按钮打开模态框
             log('🖱 点击 Renew 按钮...')
-            renew_btn = page.locator('button[data-bs-target*="renew"], a[data-bs-target*="renew"], button:has-text("Renew")').first
+            renew_btn = page.locator('button.btn-primary:has-text("Renew"), a.btn-primary:has-text("Renew")').first
+            await renew_btn.wait_for(state='visible', timeout=10000)
             await renew_btn.click()
-            await page.wait_for_timeout(3000)
-            
+            await page.wait_for_timeout(2000)
+
+            # 等待模态框出现
+            await page.wait_for_selector('.modal.show', timeout=10000)
+            log('✅ 模态框已打开')
+
             await page.screenshot(path=f'{SCREENSHOT_DIR}/modal.png', full_page=True)
 
             # 等待 Turnstile 验证完成
             log('⏳ 等待验证...')
             for i in range(60):
                 await page.wait_for_timeout(1000)
-                val = await page.locator('.modal.show input[name="cf-turnstile-response"]').get_attribute('value') or ''
-                if len(val) > 20:
-                    log(f'✅ 验证完成 ({i+1}秒)')
-                    break
+                try:
+                    val = await page.locator('.modal.show input[name="cf-turnstile-response"]').get_attribute('value', timeout=1000) or ''
+                    if len(val) > 20:
+                        log(f'✅ 验证完成 ({i+1}秒)')
+                        break
+                except:
+                    pass
                 if i % 10 == 9:
                     log(f'⏳ 等待中... ({i+1}秒)')
             else:
                 raise Exception('验证超时')
+
 
             # 提交表单
             log('🖱 提交续订...')
