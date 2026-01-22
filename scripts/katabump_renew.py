@@ -2,205 +2,114 @@
 # -*- coding: utf-8 -*-
 """KataBump 自动续订"""
 
-import os
-import sys
-import re
-import asyncio
-import requests
+import os, sys, re, requests
 from datetime import datetime, timezone, timedelta
-from playwright.async_api import async_playwright
 
-DASHBOARD_URL = 'https://dashboard.katabump.com'
-KATA_EMAIL = os.environ.get('KATA_EMAIL', '')
-KATA_PASSWORD = os.environ.get('KATA_PASSWORD', '')
-TG_BOT_TOKEN = os.environ.get('TG_BOT_TOKEN', '')
-TG_CHAT_ID = os.environ.get('TG_USER_ID', '')
-SCREENSHOT_DIR = os.environ.get('SCREENSHOT_DIR', '/tmp')
-PROXY_SERVER = os.environ.get('PROXY_SERVER', '')
-
-CF_CHALLENGE_URL = 'https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/cmg/1'
+DASHBOARD = 'https://dashboard.katabump.com'
+CF_CHALLENGE = 'https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/cmg/1'
+EMAIL = os.environ.get('KATA_EMAIL', '')
+PASSWORD = os.environ.get('KATA_PASSWORD', '')
+TG_TOKEN = os.environ.get('TG_BOT_TOKEN', '')
+TG_CHAT = os.environ.get('TG_USER_ID', '')
+PROXY = os.environ.get('PROXY_SERVER', '')
 
 
 def log(msg):
-    t = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
-    # 脱敏 IP 地址
-    msg = re.sub(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', '***.***.***.***', str(msg))
+    t = datetime.now(timezone(timedelta(hours=8))).strftime('%m-%d %H:%M:%S')
     print(f'[{t}] {msg}')
 
 
-def send_telegram(message):
-    if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        return
+def tg(msg):
+    if TG_TOKEN and TG_CHAT:
+        try:
+            requests.post(f'https://api.telegram.org/bot{TG_TOKEN}/sendMessage',
+                          json={'chat_id': TG_CHAT, 'text': msg}, timeout=30)
+        except:
+            pass
+
+
+def expiry(text):
+    m = re.search(r'Expiry[\s\S]*?(\d{4}-\d{2}-\d{2})', text, re.I)
+    return m.group(1) if m else None
+
+
+def days(d):
     try:
-        requests.post(f'https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage',
-                      json={'chat_id': TG_CHAT_ID, 'text': message, 'parse_mode': 'HTML'}, timeout=30)
-    except:
-        pass
-
-
-def get_expiry(text):
-    match = re.search(r'Expiry[\s\S]*?(\d{4}-\d{2}-\d{2})', text, re.IGNORECASE)
-    return match.group(1) if match else None
-
-
-def days_until(date_str):
-    try:
-        exp = datetime.strptime(date_str, '%Y-%m-%d')
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        return (exp - today).days
+        return (datetime.strptime(d, '%Y-%m-%d') - datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)).days
     except:
         return None
 
 
-def parse_renew_error(url):
+def err(url):
     if 'renew-error' not in url:
         return None
     from urllib.parse import unquote
-    match = re.search(r'renew-error=([^&]+)', url)
-    return unquote(match.group(1).replace('+', ' ')) if match else '续订受限'
+    m = re.search(r'renew-error=([^&]+)', url)
+    return unquote(m.group(1).replace('+', ' ')) if m else '受限'
 
 
-def parse_servers(html):
-    servers = []
-    for match in re.finditer(r'/servers/edit\?id=([a-zA-Z0-9-]+)', html):
-        sid = match.group(1)
-        if sid not in [s['id'] for s in servers]:
-            servers.append({'id': sid})
-    return servers
-
-
-async def refresh_cf_cookie(context):
-    log('🔄 刷新 CF Cookie...')
-    page = await context.new_page()
-    try:
-        await page.goto(DASHBOARD_URL, timeout=30000)
-        await page.wait_for_timeout(1000)
-        await page.goto(CF_CHALLENGE_URL, timeout=30000)
-        await page.wait_for_timeout(2000)
-        cookies = await context.cookies()
-        cfuvid = next((c['value'] for c in cookies if c['name'] == '_cfuvid'), None)
-        log('✅ CF Cookie OK' if cfuvid else '⚠️ 未获取到 _cfuvid')
-    except Exception as e:
-        log(f'⚠️ CF Cookie 失败: {e}')
-    finally:
-        await page.close()
-
-
-async def renew_server(page, server_id):
-    log(f'📦 处理: {server_id[:8]}...')
+def renew(s, sid):
+    log(f'📦 {sid[:8]}...')
+    url = f'{DASHBOARD}/servers/edit?id={sid}'
     
-    await page.goto(f'{DASHBOARD_URL}/servers/edit?id={server_id}', timeout=60000)
-    await page.wait_for_timeout(2000)
+    resp = s.get(url, timeout=30)
+    exp = expiry(resp.text) or '?'
+    log(f'📅 {exp} (剩{days(exp)}天)')
     
-    url = page.url
-    content = await page.content()
-    expiry = get_expiry(content) or '未知'
-    days = days_until(expiry)
-    log(f'📅 到期: {expiry} (剩余 {days} 天)')
+    e = err(resp.url)
+    if e:
+        log(f'⏳ {e}')
+        return {'id': sid, 'exp': exp, 'ok': False}
     
-    error = parse_renew_error(url)
-    if error:
-        log(f'⏳ {error}')
-        return {'id': server_id, 'expiry': expiry, 'days': days, 'status': 'limited', 'error': error}
+    s.get(CF_CHALLENGE, timeout=30)
     
-    renew_btn = page.locator('button[data-bs-target="#renew-modal"], button:has-text("Renew")')
-    if await renew_btn.count() == 0:
-        return {'id': server_id, 'expiry': expiry, 'days': days, 'status': 'no_button'}
+    r = s.post(f'{DASHBOARD}/api-client/renew?id={sid}',
+               headers={'Referer': url}, timeout=30, allow_redirects=False)
+    loc = r.headers.get('Location', '')
     
-    await renew_btn.first.click()
-    await page.wait_for_timeout(2000)
+    if 'renew=success' in loc:
+        new = expiry(s.get(url, timeout=30).text) or exp
+        log(f'🎉 {exp} → {new}')
+        return {'id': sid, 'exp': new, 'ok': True, 'old': exp}
     
-    modal = page.locator('#renew-modal')
-    try:
-        await modal.wait_for(state='visible', timeout=5000)
-        await page.wait_for_timeout(1000)
-        await page.locator('#renew-modal button[type="submit"]').first.click()
-        await page.wait_for_timeout(5000)
-    except:
-        return {'id': server_id, 'expiry': expiry, 'days': days, 'status': 'modal_error'}
+    if 'renew-error' in loc:
+        log(f'⏳ {err(loc)}')
     
-    if 'renew=success' in page.url:
-        new_expiry = get_expiry(await page.content()) or '未知'
-        log(f'🎉 成功！{expiry} → {new_expiry}')
-        return {'id': server_id, 'expiry': new_expiry, 'days': days_until(new_expiry), 'status': 'success', 'old_expiry': expiry}
-    
-    error = parse_renew_error(page.url)
-    if error:
-        return {'id': server_id, 'expiry': expiry, 'days': days, 'status': 'error', 'error': error}
-    
-    await page.goto(f'{DASHBOARD_URL}/servers/edit?id={server_id}', timeout=60000)
-    new_expiry = get_expiry(await page.content()) or expiry
-    if new_expiry > expiry:
-        log(f'🎉 成功！{expiry} → {new_expiry}')
-        return {'id': server_id, 'expiry': new_expiry, 'days': days_until(new_expiry), 'status': 'success', 'old_expiry': expiry}
-    
-    return {'id': server_id, 'expiry': expiry, 'days': days, 'status': 'unknown'}
-
-
-async def run():
-    log('🚀 KataBump 自动续订')
-    log(f'🌐 代理: {"已配置" if PROXY_SERVER else "无"}')
-    
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
-        
-        context_options = {'viewport': {'width': 1280, 'height': 900}}
-        if PROXY_SERVER:
-            context_options['proxy'] = {'server': PROXY_SERVER}
-        
-        context = await browser.new_context(**context_options)
-        
-        try:
-            await refresh_cf_cookie(context)
-            page = await context.new_page()
-            
-            log('🔐 登录...')
-            await page.goto(f'{DASHBOARD_URL}/auth/login', timeout=60000)
-            await page.wait_for_timeout(1000)
-            
-            await page.request.post(
-                f'{DASHBOARD_URL}/auth/login',
-                form={'email': KATA_EMAIL, 'password': KATA_PASSWORD, 'remember': 'true'},
-                headers={'Content-Type': 'application/x-www-form-urlencoded', 'Origin': DASHBOARD_URL, 'Referer': f'{DASHBOARD_URL}/auth/login'}
-            )
-            
-            await page.goto(f'{DASHBOARD_URL}/servers', timeout=60000)
-            await page.wait_for_timeout(2000)
-            
-            if '/auth/login' in page.url:
-                raise Exception('登录失败')
-            log('✅ 登录成功')
-            
-            servers = parse_servers(await page.content())
-            log(f'📦 找到 {len(servers)} 个服务器')
-            
-            if not servers:
-                return
-            
-            results = []
-            for server in servers:
-                results.append(await renew_server(page, server['id']))
-                await page.wait_for_timeout(1000)
-            
-            success = [r for r in results if r['status'] == 'success']
-            msg = f'📊 KataBump\n✅ 成功: {len(success)}/{len(results)}'
-            for r in success:
-                msg += f"\n• {r['id'][:8]}... → {r['expiry']}"
-            send_telegram(msg)
-            
-        except Exception as e:
-            log(f'❌ {e}')
-            send_telegram(f'❌ KataBump 出错: {e}')
-            raise
-        finally:
-            await browser.close()
+    return {'id': sid, 'exp': exp, 'ok': False}
 
 
 def main():
-    if not KATA_EMAIL or not KATA_PASSWORD:
-        log('❌ 请设置 KATA_EMAIL 和 KATA_PASSWORD')
-        sys.exit(1)
-    asyncio.run(run())
+    if not EMAIL or not PASSWORD:
+        sys.exit('设置 KATA_EMAIL 和 KATA_PASSWORD')
+    
+    log('🚀 KataBump')
+    
+    s = requests.Session()
+    s.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    if PROXY:
+        s.proxies = {'http': PROXY, 'https': PROXY}
+    
+    log('🔐 登录...')
+    s.get(f'{DASHBOARD}/auth/login', timeout=30)
+    r = s.post(f'{DASHBOARD}/auth/login',
+               data={'email': EMAIL, 'password': PASSWORD, 'remember': 'true'},
+               timeout=30, allow_redirects=True)
+    if '/auth/login' in r.url:
+        sys.exit('❌ 登录失败')
+    log('✅ 登录成功')
+    
+    html = s.get(f'{DASHBOARD}/servers', timeout=30).text
+    sids = list({m.group(1) for m in re.finditer(r'/servers/edit\?id=([a-zA-Z0-9-]+)', html)})
+    log(f'📦 {len(sids)} 个服务器')
+    
+    results = [renew(s, sid) for sid in sids]
+    ok = [r for r in results if r['ok']]
+    
+    msg = f'KataBump: {len(ok)}/{len(results)} 成功'
+    for r in ok:
+        msg += f"\n{r['id'][:8]}→{r['exp']}"
+    tg(msg)
+    log(f'✅ 完成 {len(ok)}/{len(results)}')
 
 
 if __name__ == '__main__':
