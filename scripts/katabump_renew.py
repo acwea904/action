@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-KataBump 自动续订脚本 (通过代理 + CF challenge 预加载)
+KataBump 自动续订脚本 (通过代理)
 """
 
 import os
@@ -13,7 +13,6 @@ from datetime import datetime, timezone, timedelta
 from playwright.async_api import async_playwright
 
 DASHBOARD_URL = 'https://dashboard.katabump.com'
-CF_CHALLENGE_URL = 'https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/cmg/1'
 SERVER_ID = os.environ.get('KATA_SERVER_ID', '')
 KATA_EMAIL = os.environ.get('KATA_EMAIL', '')
 KATA_PASSWORD = os.environ.get('KATA_PASSWORD', '')
@@ -26,16 +25,6 @@ HTTP_PROXY = os.environ.get('HTTP_PROXY', '')
 def log(msg):
     t = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
     print(f'[{t}] {msg}')
-
-
-def tg_notify(message):
-    if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        return
-    try:
-        requests.post(f'https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage',
-                      json={'chat_id': TG_CHAT_ID, 'text': message, 'parse_mode': 'HTML'}, timeout=30)
-    except:
-        pass
 
 
 def tg_notify_photo(photo_path, caption=''):
@@ -90,15 +79,6 @@ async def run():
         await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
         
         try:
-            # 预加载 CF challenge
-            log('🔐 预加载 CF challenge...')
-            try:
-                await page.goto(CF_CHALLENGE_URL, timeout=15000)
-                await page.wait_for_timeout(2000)
-                log('✅ CF challenge 已加载')
-            except Exception as e:
-                log(f'⚠️ CF challenge 加载: {e}')
-
             # 登录
             log('🔐 正在登录...')
             await page.goto(f'{DASHBOARD_URL}/auth/login', timeout=60000)
@@ -143,7 +123,22 @@ async def run():
             await modal.wait_for(state='visible', timeout=5000)
             log('✅ 模态框已打开')
 
-            # 等待 Turnstile 自动验证
+            # 等待 Turnstile iframe 加载并尝试点击
+            log('⏳ 等待 Turnstile...')
+            await page.wait_for_timeout(3000)
+            
+            # 尝试点击 Turnstile checkbox
+            try:
+                turnstile_iframe = page.frame_locator('#renew-modal iframe[src*="turnstile"], #renew-modal iframe[src*="challenges.cloudflare"]').first
+                checkbox = turnstile_iframe.locator('input[type="checkbox"], .ctp-checkbox-label, #cf-stage')
+                if await checkbox.count() > 0:
+                    log('🖱 点击 Turnstile checkbox...')
+                    await checkbox.first.click()
+                    await page.wait_for_timeout(2000)
+            except Exception as e:
+                log(f'⚠️ 点击 checkbox: {e}')
+
+            # 等待验证完成
             log('⏳ 等待验证完成...')
             response_input = page.locator('#renew-modal input[name="cf-turnstile-response"]')
             
@@ -188,9 +183,6 @@ async def run():
                 m = re.search(r'renew-error=([^&]+)', page.url)
                 err = unquote(m.group(1).replace('+', ' ')) if m else '未知'
                 log(f'⚠️ 续订受限: {err}')
-                if days and days <= 2:
-                    tg_notify_photo(f'{SCREENSHOT_DIR}/result.png', 
-                                    f'ℹ️ 续订提醒\n服务器: {SERVER_ID}\n到期: {old_expiry}\n📝 {err}')
             else:
                 await page.goto(server_url, timeout=60000)
                 await page.wait_for_timeout(3000)
