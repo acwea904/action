@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-KataBump 自动续订脚本 (通过代理)
+KataBump 自动续订脚本
 """
 
 import os
@@ -63,20 +63,41 @@ async def run():
         log(f'🌐 使用代理: {proxy_server}')
 
     async with async_playwright() as p:
+        # 使用 channel chrome 更接近真实浏览器
         browser = await p.chromium.launch(
-            headless=True,
-            args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
+            headless=False,  # 使用有头模式
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-infobars',
+                '--window-size=1280,900',
+            ]
         )
         
         context = await browser.new_context(
             proxy={'server': proxy_server} if proxy_server else None,
             viewport={'width': 1280, 'height': 900},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            locale='en-US'
+            locale='en-US',
+            timezone_id='America/New_York',
         )
         
         page = await context.new_page()
-        await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+        
+        # 更完整的反检测
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+            window.chrome = {runtime: {}};
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({state: Notification.permission}) :
+                    originalQuery(parameters)
+            );
+        """)
         
         try:
             # 登录
@@ -105,17 +126,9 @@ async def run():
             log(f'📅 当前到期: {old_expiry} (剩余 {days} 天)')
 
             # 点击 Renew
-            log('🔍 查找 Renew 按钮...')
-            renew_btn = page.locator('button[data-bs-target="#renew-modal"]')
-            if await renew_btn.count() == 0:
-                renew_btn = page.locator('button:has-text("Renew")')
-            
-            if await renew_btn.count() == 0:
-                await page.screenshot(path=f'{SCREENSHOT_DIR}/no_renew.png', full_page=True)
-                raise Exception('未找到 Renew 按钮')
-
             log('🖱 点击 Renew 按钮...')
-            await renew_btn.first.click()
+            renew_btn = page.locator('button[data-bs-target="#renew-modal"], button:has-text("Renew")').first
+            await renew_btn.click()
             await page.wait_for_timeout(2000)
 
             # 等待模态框
@@ -123,27 +136,34 @@ async def run():
             await modal.wait_for(state='visible', timeout=5000)
             log('✅ 模态框已打开')
 
-            # 等待 Turnstile iframe 加载并尝试点击
-            log('⏳ 等待 Turnstile...')
+            # 等待 Turnstile 加载
             await page.wait_for_timeout(3000)
             
-            # 尝试点击 Turnstile checkbox
+            # 点击 Turnstile checkbox
+            log('🖱 点击验证 checkbox...')
             try:
-                turnstile_iframe = page.frame_locator('#renew-modal iframe[src*="turnstile"], #renew-modal iframe[src*="challenges.cloudflare"]').first
-                checkbox = turnstile_iframe.locator('input[type="checkbox"], .ctp-checkbox-label, #cf-stage')
-                if await checkbox.count() > 0:
-                    log('🖱 点击 Turnstile checkbox...')
-                    await checkbox.first.click()
-                    await page.wait_for_timeout(2000)
+                # 方法1: 直接点击 iframe 内的 checkbox
+                turnstile_box = page.frame_locator('iframe[src*="challenges.cloudflare"]').locator('body')
+                await turnstile_box.click(position={'x': 28, 'y': 28})
+                log('✅ 已点击 Turnstile')
             except Exception as e:
-                log(f'⚠️ 点击 checkbox: {e}')
+                log(f'⚠️ 点击方法1失败: {e}')
+                try:
+                    # 方法2: 点击 iframe 元素位置
+                    iframe = page.locator('#renew-modal iframe[src*="challenges.cloudflare"]').first
+                    box = await iframe.bounding_box()
+                    if box:
+                        await page.mouse.click(box['x'] + 28, box['y'] + 28)
+                        log('✅ 已点击 Turnstile (方法2)')
+                except Exception as e2:
+                    log(f'⚠️ 点击方法2失败: {e2}')
 
             # 等待验证完成
             log('⏳ 等待验证完成...')
             response_input = page.locator('#renew-modal input[name="cf-turnstile-response"]')
             
             verified = False
-            for i in range(45):
+            for i in range(60):
                 await page.wait_for_timeout(1000)
                 if await response_input.count() > 0:
                     val = await response_input.get_attribute('value') or ''
@@ -151,7 +171,7 @@ async def run():
                         log(f'✅ 验证成功 ({i+1}秒)')
                         verified = True
                         break
-                if i % 10 == 9:
+                if i % 15 == 14:
                     log(f'⏳ 等待中... ({i+1}秒)')
                     await page.screenshot(path=f'{SCREENSHOT_DIR}/waiting_{i+1}.png', full_page=True)
 
@@ -165,8 +185,8 @@ async def run():
 
             # 提交
             log('🖱 点击确认 Renew...')
-            submit_btn = page.locator('#renew-modal button[type="submit"], #renew-modal .modal-footer button.btn-primary')
-            await submit_btn.first.click()
+            submit_btn = page.locator('#renew-modal button:has-text("Renew")').last
+            await submit_btn.click()
             await page.wait_for_timeout(5000)
 
             # 检查结果
@@ -208,11 +228,11 @@ async def run():
 
 def main():
     log('=' * 50)
-    log('   KataBump 自动续订 (代理模式)')
+    log('   KataBump 自动续订')
     log('=' * 50)
     
     if not KATA_EMAIL or not KATA_PASSWORD or not SERVER_ID:
-        log('❌ 请设置 KATA_EMAIL, KATA_PASSWORD, KATA_SERVER_ID')
+        log('❌ 请设置环境变量')
         sys.exit(1)
     
     log(f'📧 邮箱: {KATA_EMAIL[:3]}***')
