@@ -25,20 +25,13 @@ async function main() {
 
   try {
     console.log(`访问: ${config.SEARCH_URL}`);
-    const response = await page.goto(config.SEARCH_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    console.log(`状态码: ${response?.status()}`);
+    await page.goto(config.SEARCH_URL, { waitUntil: 'networkidle', timeout: 60000 });
+
+    // 等待页面完全渲染
+    await page.waitForSelector('#copyToken', { timeout: 30000 });
 
     const html = await page.content();
-    const title = await page.title();
-    console.log(`页面标题: ${title}`);
     console.log(`HTML长度: ${html.length}`);
-    console.log(`HTML前500字符:\n${html.substring(0, 500)}`);
-
-    // 检查是否被CF拦截
-    if (html.includes('challenge-platform') || html.includes('Just a moment')) {
-      console.log('❌ 被Cloudflare拦截');
-      process.exit(1);
-    }
 
     const tokenMatch = html.match(/data-clipboard-text="([a-f0-9]{16})"/);
     if (!tokenMatch) {
@@ -67,6 +60,7 @@ async function main() {
 
   } catch (error) {
     console.error('错误:', error.message);
+    await page.screenshot({ path: 'error.png' }).catch(() => {});
     process.exit(1);
   } finally {
     await browser.close();
