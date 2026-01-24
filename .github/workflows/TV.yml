@@ -1,0 +1,104 @@
+name: TaoIPTV Scraper
+
+on:
+  schedule:
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 解析配置
+        id: config
+        env:
+          TV_ACCOUNTS: ${{ secrets.TV_ACCOUNTS }}
+        run: |
+          echo "HY2_URL=$(echo "$TV_ACCOUNTS" | jq -r '.HY2_URL')" >> $GITHUB_OUTPUT
+          echo "PRIVATE_REPO=$(echo "$TV_ACCOUNTS" | jq -r '.PRIVATE_REPO')" >> $GITHUB_OUTPUT
+          echo "PRIVATE_REPO_TOKEN=$(echo "$TV_ACCOUNTS" | jq -r '.PRIVATE_REPO_TOKEN')" >> $GITHUB_OUTPUT
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 安装依赖
+        run: |
+          npm init -y
+          npm install playwright
+          npx playwright install chromium
+
+      - name: 恢复浏览器状态缓存
+        uses: actions/cache@v4
+        with:
+          path: taoiptv-state.json
+          key: taoiptv-state-${{ github.run_id }}
+          restore-keys: taoiptv-state-
+
+      - name: 启动 Hysteria2 代理
+        if: steps.config.outputs.HY2_URL != ''
+        run: |
+          wget -q https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64 -O hysteria
+          chmod +x hysteria
+          
+          HY2_URL="${{ steps.config.outputs.HY2_URL }}"
+          URL_BODY="${HY2_URL#hysteria2://}"
+          URL_BODY="${URL_BODY%%#*}"
+          PASSWORD="${URL_BODY%%@*}"
+          SERVER="${URL_BODY#*@}"
+          SERVER="${SERVER%%\?*}"
+          PARAMS="${URL_BODY#*\?}"
+          
+          SNI=$(echo "$PARAMS" | tr '&' '\n' | grep "^sni=" | cut -d'=' -f2)
+          INSECURE=$(echo "$PARAMS" | tr '&' '\n' | grep "^insecure=" | cut -d'=' -f2)
+          [ "$INSECURE" = "1" ] && INSECURE="true" || INSECURE="false"
+          
+          cat > hy2-config.yaml << EOF
+          server: ${SERVER}
+          auth: ${PASSWORD}
+          tls:
+            sni: ${SNI}
+            insecure: ${INSECURE}
+          socks5:
+            listen: 127.0.0.1:1080
+          EOF
+          
+          ./hysteria client -c hy2-config.yaml &
+          sleep 5
+          
+          RAW_IP=$(curl -s --proxy socks5://127.0.0.1:1080 https://api.ipify.org)
+          if [ -n "$RAW_IP" ]; then
+            FIRST=$(echo "$RAW_IP" | cut -d'.' -f1)
+            LAST=$(echo "$RAW_IP" | cut -d'.' -f4)
+            echo "${FIRST}.*******.${LAST} ✅ 代理就绪"
+          else
+            echo "❌ 代理连接失败"
+            exit 1
+          fi
+
+      - name: 运行爬虫
+        env:
+          TV_ACCOUNTS: ${{ secrets.TV_ACCOUNTS }}
+        run: node scraper.js
+
+      - name: 保存浏览器状态缓存
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: taoiptv-state.json
+          key: taoiptv-state-${{ github.run_id }}
+
+      - name: 推送到私有仓库
+        run: |
+          git clone https://x-access-token:${{ steps.config.outputs.PRIVATE_REPO_TOKEN }}@github.com/${{ steps.config.outputs.PRIVATE_REPO }}.git private-repo
+          cp taoiptv.m3u private-repo/
+          cd private-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add taoiptv.m3u
+          git diff --cached --quiet || git commit -m "更新 taoiptv.m3u $(date '+%Y-%m-%d %H:%M')"
+          git push
