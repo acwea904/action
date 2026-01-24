@@ -83,7 +83,7 @@ jobs:
       - name: 运行爬虫
         env:
           TV_ACCOUNTS: ${{ secrets.TV_ACCOUNTS }}
-        run: node scraper.js
+        run: node scripts/taoiptv.js
 
       - name: 保存浏览器状态缓存
         uses: actions/cache/save@v4
