@@ -25,10 +25,21 @@ async function main() {
 
   try {
     console.log(`访问: ${config.SEARCH_URL}`);
-    await page.goto(config.SEARCH_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    const response = await page.goto(config.SEARCH_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    console.log(`状态码: ${response?.status()}`);
 
-    // 直接从HTML提取token
     const html = await page.content();
+    const title = await page.title();
+    console.log(`页面标题: ${title}`);
+    console.log(`HTML长度: ${html.length}`);
+    console.log(`HTML前500字符:\n${html.substring(0, 500)}`);
+
+    // 检查是否被CF拦截
+    if (html.includes('challenge-platform') || html.includes('Just a moment')) {
+      console.log('❌ 被Cloudflare拦截');
+      process.exit(1);
+    }
+
     const tokenMatch = html.match(/data-clipboard-text="([a-f0-9]{16})"/);
     if (!tokenMatch) {
       console.log('❌ 未找到Token');
@@ -38,25 +49,21 @@ async function main() {
     const token = tokenMatch[1];
     console.log(`Token: ${token}`);
 
-    // 从搜索结果提取TXT ID
     const idMatch = html.match(/lives\/(\d+)\.txt/);
     const txtId = idMatch ? idMatch[1] : '44023';
-    console.log(`TXT ID: ${txtId}`);
 
-    // 获取TXT
     const txtUrl = `https://taoiptv.com/lives/${txtId}.txt?token=${token}`;
     console.log(`获取: ${txtUrl}`);
-    const response = await page.goto(txtUrl, { timeout: 30000 });
-    const bodyText = await response.text();
+    const txtResponse = await page.goto(txtUrl, { timeout: 30000 });
+    const bodyText = await txtResponse.text();
 
     if (!bodyText || bodyText.length < 100) {
       console.log('❌ TXT内容异常');
-      console.log(bodyText.substring(0, 500));
       process.exit(1);
     }
 
     fs.writeFileSync('taoiptv.m3u', convertToM3U(bodyText), 'utf8');
-    console.log(`✅ 已生成 taoiptv.m3u (${bodyText.split('\n').length} 行)`);
+    console.log(`✅ 已生成 taoiptv.m3u`);
 
   } catch (error) {
     console.error('错误:', error.message);
@@ -67,8 +74,7 @@ async function main() {
 }
 
 function convertToM3U(txt) {
-  let m3u = '#EXTM3U\n';
-  let group = '其他';
+  let m3u = '#EXTM3U\n', group = '其他';
   for (const line of txt.split('\n')) {
     const t = line.trim();
     if (!t) continue;
