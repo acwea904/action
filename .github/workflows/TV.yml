@@ -1,4 +1,4 @@
-name: TaoIPTV Scraper
+name: TaoIPTV 爬虫
 
 on:
   schedule:
