@@ -19,10 +19,9 @@ async function main() {
   } else if (config.COOKIES) {
     console.log('使用初始 Cookies...');
     context = await browser.newContext({ userAgent });
-    
     const cookies = config.COOKIES.split('; ').map(c => {
-      const [name, value] = c.split('=');
-      return { name, value, domain: '.taoiptv.com', path: '/', secure: true, sameSite: 'None' };
+      const [name, ...rest] = c.split('=');
+      return { name, value: rest.join('='), domain: '.taoiptv.com', path: '/', secure: true, sameSite: 'None' };
     });
     await context.addCookies(cookies);
   } else {
@@ -30,8 +29,6 @@ async function main() {
   }
 
   const page = await context.newPage();
-  
-  // 设置额外 headers
   await page.setExtraHTTPHeaders({
     'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
     'sec-ch-ua': '"Not(A:Brand";v="8", "Chromium";v="144", "Google Chrome";v="144"',
@@ -41,39 +38,49 @@ async function main() {
 
   try {
     console.log(`访问: ${config.SEARCH_URL}`);
-    const response = await page.goto(config.SEARCH_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    const response = await page.goto(config.SEARCH_URL, { waitUntil: 'networkidle', timeout: 60000 });
     console.log(`状态码: ${response?.status()}`);
 
-    const content = await page.content();
-    if (content.includes('challenge-platform')) {
-      console.log('❌ 被Cloudflare拦截');
-      await page.screenshot({ path: 'cf-blocked.png' });
+    // 截图调试
+    await page.screenshot({ path: 'page-loaded.png', fullPage: true });
+    
+    // 打印页面标题和部分HTML
+    const title = await page.title();
+    console.log(`页面标题: ${title}`);
+    
+    const bodyHtml = await page.evaluate(() => document.body.innerHTML.substring(0, 2000));
+    console.log('页面内容预览:');
+    console.log(bodyHtml);
+
+    // 检查可能的选择器
+    const selectors = ['#copyToken', '.copyToken', '[data-clipboard-text]', 'button[id*="copy"]', '.token'];
+    for (const sel of selectors) {
+      const count = await page.locator(sel).count();
+      console.log(`${sel}: ${count}个`);
+    }
+
+    // 尝试等待
+    const tokenEl = await page.waitForSelector('#copyToken', { timeout: 10000 }).catch(() => null);
+    if (!tokenEl) {
+      console.log('❌ 未找到 #copyToken');
       process.exit(1);
     }
 
-    await page.waitForSelector('#copyToken', { timeout: 30000 });
-    const token = await page.$eval('#copyToken', el => el.getAttribute('data-clipboard-text'));
+    const token = await tokenEl.getAttribute('data-clipboard-text');
     console.log(`Token: ${token}`);
 
     const txtUrl = `https://taoiptv.com/lives/44023.txt?token=${token}`;
-    console.log(`获取: ${txtUrl}`);
     await page.goto(txtUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     const bodyText = await page.evaluate(() => document.body.innerText);
 
-    if (!bodyText || bodyText.length < 100) {
-      console.log('❌ TXT内容异常');
-      process.exit(1);
-    }
-
     fs.writeFileSync('taoiptv.m3u', convertToM3U(bodyText), 'utf8');
     console.log('✅ 已生成 taoiptv.m3u');
-
     await context.storageState({ path: STATE_FILE });
-    console.log('✅ 状态已保存');
 
   } catch (error) {
     console.error('错误:', error.message);
     await page.screenshot({ path: 'error.png' }).catch(() => {});
+    fs.writeFileSync('error.html', await page.content().catch(() => ''));
     process.exit(1);
   } finally {
     await browser.close();
@@ -83,20 +90,13 @@ async function main() {
 function convertToM3U(txt) {
   const lines = txt.trim().split('\n');
   let m3u = '#EXTM3U\n';
-  let currentGroup = '其他';
-
+  let group = '其他';
   for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    if (trimmed.includes(',#genre#')) {
-      currentGroup = trimmed.replace(',#genre#', '').trim();
-      continue;
-    }
-    const match = trimmed.match(/^(.+?),(https?:\/\/.+)$/);
-    if (match) {
-      const [, name, url] = match;
-      m3u += `#EXTINF:-1 group-title="${currentGroup}",${name}\n${url}\n`;
-    }
+    const t = line.trim();
+    if (!t) continue;
+    if (t.includes(',#genre#')) { group = t.replace(',#genre#', ''); continue; }
+    const m = t.match(/^(.+?),(https?:\/\/.+)$/);
+    if (m) m3u += `#EXTINF:-1 group-title="${group}",${m[1]}\n${m[2]}\n`;
   }
   return m3u;
 }
