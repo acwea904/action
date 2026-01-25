@@ -48,9 +48,8 @@ jobs:
         run: |
           cd qinglong
           pnpm install --no-strict-peer-dependencies
-          pnpm run build:back
-          pnpm run build:front
-          ls -la static/dist/ || echo "前端构建失败"
+          pnpm build:back
+          pnpm build:front
       
       - name: Reinstall production only
         if: steps.check.outputs.exists == 'false'
