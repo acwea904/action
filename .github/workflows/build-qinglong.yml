@@ -24,8 +24,9 @@ jobs:
       - name: Get latest version
         id: version
         run: |
-          LATEST=$(curl -s https://api.github.com/repos/whyour/qinglong/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+          LATEST=$(curl -s https://api.github.com/repos/whyour/qinglong/tags | jq -r '[.[] | select(.name | test("-") | not)][0].name')
           echo "version=$LATEST" >> $GITHUB_OUTPUT
+          echo "Latest version: $LATEST"
       
       - name: Check if exists
         id: check
@@ -40,8 +41,7 @@ jobs:
       
       - name: Clone Qinglong
         if: steps.check.outputs.exists == 'false'
-        run: |
-          git clone --depth 1 --branch ${{ steps.version.outputs.version }} https://github.com/whyour/qinglong.git
+        run: git clone --depth 1 --branch ${{ steps.version.outputs.version }} https://github.com/whyour/qinglong.git
       
       - name: Install and build
         if: steps.check.outputs.exists == 'false'
@@ -61,8 +61,8 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: |
           cd qinglong
-          rm -rf .git .github .vscode docker
-          rm -f *.md .dockerignore .gitignore 2>/dev/null || true
+          rm -rf .git .github .vscode docker src
+          rm -f *.md .dockerignore .gitignore tsconfig.json 2>/dev/null || true
           find node_modules -name "*.md" -delete 2>/dev/null || true
           find node_modules -name "*.map" -delete 2>/dev/null || true
           find node_modules -name "LICENSE*" -delete 2>/dev/null || true
