@@ -47,7 +47,7 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: |
           cd qinglong
-          pnpm install --legacy-peer-deps
+          pnpm install --no-strict-peer-dependencies
           pnpm build:back
           pnpm build:front
       
@@ -56,7 +56,7 @@ jobs:
         run: |
           cd qinglong
           rm -rf node_modules
-          pnpm install --prod --legacy-peer-deps
+          pnpm install --prod --no-strict-peer-dependencies
       
       - name: Clean up
         if: steps.check.outputs.exists == 'false'
