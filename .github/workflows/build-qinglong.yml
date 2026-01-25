@@ -1,4 +1,4 @@
-name: 预构建青龙面板
+name: 预构建青龙面板（含前端）
 
 on:
   workflow_dispatch:
@@ -6,76 +6,99 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v2
         with:
           version: 8
-      
-      - name: Get latest version
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Get latest Qinglong version
         id: version
         run: |
-          LATEST=$(curl -s https://api.github.com/repos/whyour/qinglong/tags | jq -r '[.[] | select(.name | test("-") | not)][0].name')
+          LATEST=$(curl -s https://api.github.com/repos/whyour/qinglong/tags \
+            | jq -r '[.[] | select(.name | test("-") | not)][0].name')
           echo "version=$LATEST" >> $GITHUB_OUTPUT
           echo "Latest version: $LATEST"
-      
-      - name: Check if exists
+
+      - name: Check if release exists
         id: check
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          RELEASE=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/tags/$VERSION || echo "")
+          RELEASE=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/tags/$VERSION || true)
           if echo "$RELEASE" | grep -q '"id"'; then
             echo "exists=true" >> $GITHUB_OUTPUT
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
-      
+
       - name: Clone Qinglong
         if: steps.check.outputs.exists == 'false'
-        run: git clone --depth 1 --branch ${{ steps.version.outputs.version }} https://github.com/whyour/qinglong.git
-      
-      - name: Install and build
+        run: |
+          git clone --depth 1 --branch ${{ steps.version.outputs.version }} https://github.com/whyour/qinglong.git
+
+      - name: Build backend and frontend
         if: steps.check.outputs.exists == 'false'
         run: |
           cd qinglong
+
+          echo "=== Build backend ==="
           pnpm install --no-strict-peer-dependencies
           pnpm build:back
-          pnpm build:front
-      
-      - name: Reinstall production only
+
+          echo "=== Build frontend ==="
+          cd front
+          pnpm install
+          pnpm build
+
+          echo "=== Move frontend build to static/build ==="
+          cd ..
+          rm -rf static/build
+          mkdir -p static
+          cp -r front/dist static/build
+
+          echo "=== Verify frontend output ==="
+          ls -lh static/build
+          test -f static/build/index.html
+
+      - name: Reinstall production dependencies only
         if: steps.check.outputs.exists == 'false'
         run: |
           cd qinglong
           rm -rf node_modules
           pnpm install --prod --no-strict-peer-dependencies
-      
-      - name: Clean up
+
+      - name: Clean up unnecessary files
         if: steps.check.outputs.exists == 'false'
         run: |
           cd qinglong
-          rm -rf .git .github .vscode docker src
+          rm -rf .git .github .vscode docker front src
           rm -f *.md .dockerignore .gitignore tsconfig.json 2>/dev/null || true
           find node_modules -name "*.md" -delete 2>/dev/null || true
           find node_modules -name "*.map" -delete 2>/dev/null || true
           find node_modules -name "LICENSE*" -delete 2>/dev/null || true
           find node_modules -type d -name "test" -exec rm -rf {} + 2>/dev/null || true
           find node_modules -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true
-      
+
       - name: Package
         if: steps.check.outputs.exists == 'false'
         run: |
           tar -czvf qinglong-${{ steps.version.outputs.version }}.tar.gz qinglong
           ls -lh qinglong-*.tar.gz
-      
+
       - name: Create Release
         if: steps.check.outputs.exists == 'false'
         uses: softprops/action-gh-release@v1
@@ -84,7 +107,11 @@ jobs:
           name: Qinglong ${{ steps.version.outputs.version }}
           body: |
             Pre-built Qinglong ${{ steps.version.outputs.version }}
-            
+
+            This package includes:
+            - Backend (dist/)
+            - Frontend (static/build/index.html)
+
             Usage:
             tar -xzf qinglong-*.tar.gz
             cd qinglong
