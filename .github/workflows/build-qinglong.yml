@@ -60,19 +60,14 @@ jobs:
           pnpm build:back
 
           echo "=== Build frontend ==="
-          cd front
+          cd static
           pnpm install
           pnpm build
 
-          echo "=== Move frontend build to static/build ==="
-          cd ..
-          rm -rf static/build
-          mkdir -p static
-          cp -r front/dist static/build
-
           echo "=== Verify frontend output ==="
-          ls -lh static/build
-          test -f static/build/index.html
+          ls -lh build
+          test -f build/index.html
+
 
       - name: Reinstall production dependencies only
         if: steps.check.outputs.exists == 'false'
