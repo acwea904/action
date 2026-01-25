@@ -1,0 +1,93 @@
+name: 预构建青龙面板
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+      
+      - name: Get latest version
+        id: version
+        run: |
+          LATEST=$(curl -s https://api.github.com/repos/whyour/qinglong/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "version=$LATEST" >> $GITHUB_OUTPUT
+      
+      - name: Check if exists
+        id: check
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          RELEASE=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/tags/$VERSION || echo "")
+          if echo "$RELEASE" | grep -q '"id"'; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Clone Qinglong
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          git clone --depth 1 --branch ${{ steps.version.outputs.version }} https://github.com/whyour/qinglong.git
+      
+      - name: Install and build
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          cd qinglong
+          pnpm install
+          pnpm build
+      
+      - name: Reinstall production only
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          cd qinglong
+          rm -rf node_modules
+          pnpm install --prod
+      
+      - name: Clean up
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          cd qinglong
+          rm -rf .git .github .vscode docker
+          rm -f *.md .dockerignore .gitignore 2>/dev/null || true
+          find node_modules -name "*.md" -delete 2>/dev/null || true
+          find node_modules -name "*.map" -delete 2>/dev/null || true
+          find node_modules -name "LICENSE*" -delete 2>/dev/null || true
+          find node_modules -type d -name "test" -exec rm -rf {} + 2>/dev/null || true
+          find node_modules -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true
+      
+      - name: Package
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          tar -czvf qinglong-${{ steps.version.outputs.version }}.tar.gz qinglong
+          ls -lh qinglong-*.tar.gz
+      
+      - name: Create Release
+        if: steps.check.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Qinglong ${{ steps.version.outputs.version }}
+          body: |
+            Pre-built Qinglong ${{ steps.version.outputs.version }}
+            
+            Usage:
+            tar -xzf qinglong-*.tar.gz
+            cd qinglong
+            node dist/app.js
+          files: qinglong-${{ steps.version.outputs.version }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
