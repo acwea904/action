@@ -69,11 +69,9 @@ jobs:
       - name: 运行续订
        env:
           KATA_COOKIES: ${{ secrets.KATA_COOKIES }}
-          REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           FORCE_RENEW: ${{ github.event.inputs.force_renew || 'false' }}
-          HTTP_PROXY: http://127.0.0.1:8080
-          HTTPS_PROXY: http://127.0.0.1:8080
         run: python scripts/katabump_renew.py
