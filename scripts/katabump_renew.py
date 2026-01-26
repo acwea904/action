@@ -53,19 +53,6 @@ def tg_notify(message):
         return False
 
 
-def parse_cookies(cookie_str):
-    """解析 Cookie 字符串为字典"""
-    cookies = {}
-    if not cookie_str:
-        return cookies
-    for item in cookie_str.split(';'):
-        item = item.strip()
-        if '=' in item:
-            key, value = item.split('=', 1)
-            cookies[key.strip()] = value.strip()
-    return cookies
-
-
 def get_expiry_from_html(html):
     patterns = [
         r'<div[^>]*>\s*Expiry\s*</div>\s*<div[^>]*>(\d{4}-\d{2}-\d{2})</div>',
@@ -84,9 +71,6 @@ def get_server_info(html):
     match = re.search(r'<div[^>]*>\s*Name\s*</div>\s*<div[^>]*>([^<]+)</div>', html, re.I | re.S)
     if match:
         info['name'] = match.group(1).strip()
-    match = re.search(r'<div[^>]*>\s*Identifier\s*</div>\s*<div[^>]*>([^<]+)</div>', html, re.I | re.S)
-    if match:
-        info['identifier'] = match.group(1).strip()
     info['expiry'] = get_expiry_from_html(html)
     return info
 
@@ -116,19 +100,21 @@ def extract_csrf_token(html):
 
 def check_renew_result(url, html=''):
     if 'renew=success' in url:
-        return 'success', 'Your service has been renewed.'
+        return 'success', 'renewed'
     match = re.search(r'renew-error=([^&]+)', url)
     if match:
-        error_msg = unquote(match.group(1).replace('+', ' '))
-        return 'error', error_msg
-    if html:
-        if 'Your service has been renewed' in html:
-            return 'success', 'Your service has been renewed.'
+        return 'error', unquote(match.group(1).replace('+', ' '))
+    if html and 'Your service has been renewed' in html:
+        return 'success', 'renewed'
     return 'unknown', None
 
 
-def is_login_page(url):
-    return '/auth/login' in url
+def is_login_page(url, html=''):
+    if '/auth/login' in url:
+        return True
+    if html and 'name="email"' in html and 'name="password"' in html:
+        return True
+    return False
 
 
 # ================= 主类 =================
@@ -137,104 +123,149 @@ class KataBumpRenewer:
     def __init__(self):
         self.session = None
         self.servers = []
-        self.base_headers = {
+
+    def init_session(self):
+        self.session = requests.Session()
+        
+        # 设置 Headers
+        self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
-        }
-
-    def init_session(self):
-        self.session = requests.Session()
-        self.session.headers.update(self.base_headers)
+        })
         
         # 设置代理
         proxy = os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY')
         if proxy:
             self.session.proxies = {'http': proxy, 'https': proxy}
-            log(f'使用代理: {proxy}', 'DEBUG' if DEBUG_MODE else 'INFO')
+            log(f'使用代理: {proxy}')
         
         # 解析并设置 Cookies
-        cookies = parse_cookies(KATA_COOKIES)
-        if not cookies:
+        if not KATA_COOKIES:
             raise Exception('未设置 KATA_COOKIES')
         
-        for name, value in cookies.items():
-            self.session.cookies.set(name, value, domain='.katabump.com')
+        cookie_count = 0
+        for item in KATA_COOKIES.split(';'):
+            item = item.strip()
+            if '=' in item:
+                key, value = item.split('=', 1)
+                key = key.strip()
+                value = value.strip()
+                # 直接设置到 session cookies，不指定 domain
+                self.session.cookies.set(key, value)
+                cookie_count += 1
+                if DEBUG_MODE:
+                    log(f'  Cookie: {key}={value[:20]}...', 'DEBUG')
         
-        log(f'已加载 {len(cookies)} 个 Cookie', 'DEBUG' if DEBUG_MODE else 'INFO')
-        if DEBUG_MODE:
-            log(f'Cookie 名称: {list(cookies.keys())}', 'DEBUG')
+        log(f'已加载 {cookie_count} 个 Cookie')
 
-    def parse_servers_from_dashboard(self, html):
-        """从 dashboard 页面解析服务器列表"""
+    def request(self, method, url, **kwargs):
+        """发送请求，手动处理重定向以便调试"""
+        kwargs['allow_redirects'] = False
+        kwargs.setdefault('timeout', 60)
+        
+        max_redirects = 10
+        redirect_count = 0
+        
+        while redirect_count < max_redirects:
+            if method.upper() == 'GET':
+                resp = self.session.get(url, **kwargs)
+            else:
+                resp = self.session.post(url, **kwargs)
+            
+            if DEBUG_MODE:
+                log(f'  {method} {url} -> {resp.status_code}', 'DEBUG')
+            
+            # 检查是否需要重定向
+            if resp.status_code in (301, 302, 303, 307, 308):
+                redirect_url = resp.headers.get('Location', '')
+                if not redirect_url:
+                    break
+                
+                # 处理相对 URL
+                if redirect_url.startswith('/'):
+                    redirect_url = f'{DASHBOARD_URL}{redirect_url}'
+                
+                if DEBUG_MODE:
+                    log(f'  重定向到: {redirect_url}', 'DEBUG')
+                
+                url = redirect_url
+                redirect_count += 1
+                
+                # POST 重定向后变成 GET
+                if resp.status_code in (301, 302, 303):
+                    method = 'GET'
+                    kwargs.pop('data', None)
+            else:
+                break
+        
+        if redirect_count >= max_redirects:
+            raise Exception(f'重定向次数过多 ({redirect_count})')
+        
+        # 设置最终 URL
+        resp.url = url
+        return resp
+
+    def parse_servers(self, html):
+        """解析服务器列表"""
         servers = []
         
-        # 匹配表格行
-        pattern = r'<tr>\s*<td>(\d+)</td>\s*<td>([^<]+)</td>\s*<td>([^<]+)</td>\s*<td>([^<]+)</td>\s*<td>([^<]+)</td>\s*<td>([^<]+)</td>\s*<td>([^<]+)</td>\s*<td><a href="[^"]*servers/edit\?id=(\d+)"'
-        
-        matches = re.findall(pattern, html, re.I | re.S)
-        
+        # 方法1: 匹配完整表格行
+        pattern = r'<tr>\s*<td>(\d+)</td>\s*<td>([^<]+)</td>\s*<td>([^<]+)</td>\s*<td>([^<]+)</td>[\s\S]*?servers/edit\?id=(\d+)'
+        matches = re.findall(pattern, html, re.I)
         for match in matches:
-            server = {
-                'id': match[7],
+            servers.append({
+                'id': match[4],
                 'name': match[1].strip(),
                 'location': match[2].strip(),
-                'type': match[3].strip(),
-            }
-            servers.append(server)
+            })
         
-        # 备用方法
+        # 方法2: 只提取链接
         if not servers:
-            id_pattern = r'href="[^"]*servers/edit\?id=(\d+)"[^>]*>See</a>'
-            ids = re.findall(id_pattern, html, re.I)
-            for server_id in ids:
-                servers.append({'id': server_id, 'name': f'Server-{server_id}'})
+            pattern = r'href="[^"]*servers/edit\?id=(\d+)"[^>]*>See</a>'
+            ids = re.findall(pattern, html, re.I)
+            for sid in ids:
+                servers.append({'id': sid, 'name': f'Server-{sid}'})
         
         return servers
 
     def get_dashboard(self):
-        """获取 dashboard 页面"""
+        """获取 Dashboard"""
         log('获取 Dashboard...')
-        resp = self.session.get(f'{DASHBOARD_URL}/dashboard', timeout=60, allow_redirects=True)
-        current_url = str(resp.url)
+        
+        resp = self.request('GET', f'{DASHBOARD_URL}/dashboard')
         
         if DEBUG_MODE:
-            log(f'Dashboard 状态: {resp.status_code}', 'DEBUG')
-            log(f'Dashboard URL: {current_url}', 'DEBUG')
             with open('/tmp/dashboard.html', 'w', encoding='utf-8') as f:
                 f.write(resp.text)
         
-        # 检查是否被重定向到登录页
-        if is_login_page(current_url):
+        # 检查是否在登录页
+        if is_login_page(resp.url, resp.text):
             raise Exception('Cookie 已过期，请更新 KATA_COOKIES')
         
-        # 检查 Cloudflare 挑战
-        if 'challenge-platform' in resp.text or 'Just a moment' in resp.text:
-            raise Exception('遇到 Cloudflare 挑战，请更新 Cookie（特别是 cf_clearance）')
+        # 检查 Cloudflare
+        if 'Just a moment' in resp.text or 'challenge-platform' in resp.text:
+            raise Exception('遇到 Cloudflare 挑战，请更新 Cookie')
         
-        self.servers = self.parse_servers_from_dashboard(resp.text)
-        log(f'成功获取 Dashboard', 'SUCCESS')
+        self.servers = self.parse_servers(resp.text)
+        log('Dashboard 获取成功', 'SUCCESS')
         return resp.text
 
     def get_server_page(self, server_id):
-        """获取服务器详情页面"""
-        server_url = f'{DASHBOARD_URL}/servers/edit?id={server_id}'
-
-        resp = self.session.get(server_url, timeout=60, allow_redirects=True)
-        current_url = str(resp.url)
-
+        """获取服务器页面"""
+        resp = self.request('GET', f'{DASHBOARD_URL}/servers/edit?id={server_id}')
+        
         if DEBUG_MODE:
-            log(f'服务器页面 URL: {current_url}', 'DEBUG')
             with open(f'/tmp/server_{server_id}.html', 'w', encoding='utf-8') as f:
                 f.write(resp.text)
-
-        if is_login_page(current_url):
+        
+        if is_login_page(resp.url, resp.text):
             raise Exception('Cookie 已过期')
-
-        return resp.text, current_url
+        
+        return resp.text, resp.url
 
     def should_renew(self, days_left):
         if FORCE_RENEW:
@@ -245,149 +276,91 @@ class KataBumpRenewer:
 
     def do_renew(self, server_id, html):
         """执行续订"""
-        log(f'正在续订...')
-
-        # 提取 CSRF token
-        modal_match = re.search(r'id="renew-modal"[\s\S]*?</form>', html, re.I)
-        if modal_match:
-            csrf = extract_csrf_token(modal_match.group(0))
-        else:
-            csrf = extract_csrf_token(html)
-
+        # 提取 CSRF
+        modal = re.search(r'id="renew-modal"[\s\S]*?</form>', html, re.I)
+        csrf = extract_csrf_token(modal.group(0) if modal else html)
+        
         if not csrf:
             raise Exception('无法提取 CSRF token')
-
+        
         if DEBUG_MODE:
             log(f'CSRF: {csrf[:30]}...', 'DEBUG')
-
-        renew_url = f'{DASHBOARD_URL}/api-client/renew?id={server_id}'
-
-        resp = self.session.post(
-            renew_url,
+        
+        resp = self.request(
+            'POST',
+            f'{DASHBOARD_URL}/api-client/renew?id={server_id}',
             data={'csrf': csrf},
             headers={
-                **self.base_headers,
                 'Content-Type': 'application/x-www-form-urlencoded',
                 'Origin': DASHBOARD_URL,
                 'Referer': f'{DASHBOARD_URL}/servers/edit?id={server_id}',
-            },
-            timeout=60,
-            allow_redirects=True
+            }
         )
-
+        
         if DEBUG_MODE:
-            log(f'续订响应 URL: {resp.url}', 'DEBUG')
             with open(f'/tmp/renew_{server_id}.html', 'w', encoding='utf-8') as f:
                 f.write(resp.text)
-
-        result, message = check_renew_result(str(resp.url), resp.text)
-
+        
+        result, msg = check_renew_result(resp.url, resp.text)
+        
         if result == 'success':
-            return True, message
+            return True, msg
         elif result == 'error':
-            return False, message
-
+            return False, msg
+        
         if 'turnstile' in resp.text.lower():
-            return False, '需要 Turnstile 验证，请更新 Cookie'
-
-        return None, '续订结果未知'
+            return False, '需要验证，请更新 Cookie'
+        
+        return None, '结果未知'
 
     def process_server(self, server):
         """处理单个服务器"""
-        server_id = server['id']
-        server_name = server.get('name', f'Server-{server_id}')
+        sid = server['id']
+        name = server.get('name', f'Server-{sid}')
         
         log(f'')
-        log(f'━━━ {server_name} (ID: {server_id}) ━━━')
+        log(f'━━━ {name} (ID: {sid}) ━━━')
         
         try:
-            html, current_url = self.get_server_page(server_id)
+            html, url = self.get_server_page(sid)
             
-            # 检查 URL 中是否有续订结果
-            result, message = check_renew_result(current_url, html)
+            # 检查是否已续订
+            result, _ = check_renew_result(url, html)
             if result == 'success':
-                log(f'检测到已续订', 'SUCCESS')
+                log('检测到已续订', 'SUCCESS')
             
-            server_info = get_server_info(html)
-            expiry = server_info.get('expiry')
+            info = get_server_info(html)
+            expiry = info.get('expiry')
             days_left = days_until(expiry)
             
-            log(f'到期: {expiry or "未知"} | 剩余: {days_left if days_left is not None else "?"} 天')
+            log(f'到期: {expiry or "?"} | 剩余: {days_left if days_left is not None else "?"} 天')
             
             if not self.should_renew(days_left):
-                log(f'无需续订', 'SUCCESS')
-                return {
-                    'server_id': server_id,
-                    'server_name': server_info.get('name', server_name),
-                    'expiry': expiry,
-                    'days_left': days_left,
-                    'action': 'skip',
-                    'success': True,
-                }
+                log('无需续订', 'SUCCESS')
+                return {'id': sid, 'name': name, 'expiry': expiry, 'days': days_left, 'action': 'skip', 'ok': True}
             
-            if FORCE_RENEW:
-                log('强制续订', 'WARNING')
-            else:
-                log(f'剩余 {days_left} 天，执行续订...')
+            log('执行续订...')
+            old_exp = expiry
+            ok, msg = self.do_renew(sid, html)
             
-            old_expiry = expiry
-            success, message = self.do_renew(server_id, html)
-            
-            if success:
+            if ok:
                 time.sleep(2)
-                html, _ = self.get_server_page(server_id)
-                new_expiry = get_expiry_from_html(html) or '未知'
-                new_days = days_until(new_expiry)
-                log(f'续订成功！{old_expiry} → {new_expiry}', 'SUCCESS')
-                return {
-                    'server_id': server_id,
-                    'server_name': server_info.get('name', server_name),
-                    'old_expiry': old_expiry,
-                    'new_expiry': new_expiry,
-                    'days_left': new_days,
-                    'action': 'renewed',
-                    'success': True,
-                }
-            elif success is False:
-                log(f'续订失败: {message}', 'WARNING')
-                if message and ("can't renew" in message.lower() or 'not yet' in message.lower()):
-                    return {
-                        'server_id': server_id,
-                        'server_name': server_info.get('name', server_name),
-                        'expiry': expiry,
-                        'days_left': days_left,
-                        'action': 'not_yet',
-                        'message': message,
-                        'success': True,
-                    }
-                return {
-                    'server_id': server_id,
-                    'server_name': server_info.get('name', server_name),
-                    'expiry': expiry,
-                    'action': 'failed',
-                    'message': message,
-                    'success': False,
-                }
+                html, _ = self.get_server_page(sid)
+                new_exp = get_expiry_from_html(html) or '?'
+                log(f'续订成功！{old_exp} → {new_exp}', 'SUCCESS')
+                return {'id': sid, 'name': name, 'old': old_exp, 'new': new_exp, 'action': 'renewed', 'ok': True}
+            elif ok is False:
+                log(f'续订失败: {msg}', 'WARNING')
+                if msg and 'can\'t renew' in msg.lower():
+                    return {'id': sid, 'name': name, 'expiry': expiry, 'action': 'not_yet', 'msg': msg, 'ok': True}
+                return {'id': sid, 'name': name, 'action': 'failed', 'msg': msg, 'ok': False}
             else:
-                log(f'结果未知: {message}', 'WARNING')
-                return {
-                    'server_id': server_id,
-                    'server_name': server_info.get('name', server_name),
-                    'expiry': expiry,
-                    'action': 'unknown',
-                    'message': message,
-                    'success': False,
-                }
+                log(f'结果未知: {msg}', 'WARNING')
+                return {'id': sid, 'name': name, 'action': 'unknown', 'msg': msg, 'ok': False}
                 
         except Exception as e:
             log(f'出错: {e}', 'ERROR')
-            return {
-                'server_id': server_id,
-                'server_name': server_name,
-                'action': 'error',
-                'message': str(e),
-                'success': False,
-            }
+            return {'id': sid, 'name': name, 'action': 'error', 'msg': str(e), 'ok': False}
 
     def run(self):
         log('=' * 50)
@@ -395,67 +368,57 @@ class KataBumpRenewer:
         log('=' * 50)
 
         if DEBUG_MODE:
-            log('调试模式已启用', 'DEBUG')
+            log('调试模式', 'DEBUG')
         if FORCE_RENEW:
-            log('强制续订已启用', 'WARNING')
+            log('强制续订', 'WARNING')
 
         self.init_session()
 
         try:
-            # 获取 Dashboard 和服务器列表
             self.get_dashboard()
 
             if not self.servers:
-                raise Exception('未找到任何服务器')
+                raise Exception('未找到服务器')
 
-            log(f'找到 {len(self.servers)} 个服务器:')
+            log(f'找到 {len(self.servers)} 个服务器')
             for s in self.servers:
-                log(f'  • {s.get("name")} ({s.get("location", "?")})')
+                log(f'  • {s["name"]} ({s.get("location", "?")})')
 
-            # 处理每个服务器
             results = []
             for i, server in enumerate(self.servers):
                 if i > 0:
-                    delay = random.uniform(2, 4)
-                    time.sleep(delay)
-                
-                result = self.process_server(server)
-                results.append(result)
+                    time.sleep(random.uniform(2, 4))
+                results.append(self.process_server(server))
 
             # 汇总
             log('')
             log('=' * 50)
-            log('处理完成')
             
             renewed = [r for r in results if r['action'] == 'renewed']
             skipped = [r for r in results if r['action'] == 'skip']
             not_yet = [r for r in results if r['action'] == 'not_yet']
             failed = [r for r in results if r['action'] in ('failed', 'error', 'unknown')]
             
-            # 构建通知
-            msg_parts = ['📋 <b>KataBump 续订报告</b>']
-            
+            # 通知
+            msg = ['📋 <b>KataBump 续订报告</b>']
             if renewed:
-                msg_parts.append('\n✅ <b>已续订:</b>')
+                msg.append('\n✅ <b>已续订:</b>')
                 for r in renewed:
-                    msg_parts.append(f"• {r['server_name']}: {r.get('old_expiry')} → {r.get('new_expiry')}")
-            
+                    msg.append(f"• {r['name']}: {r.get('old')} → {r.get('new')}")
             if skipped:
-                msg_parts.append('\n📋 <b>无需续订:</b>')
+                msg.append('\n📋 <b>无需续订:</b>')
                 for r in skipped:
-                    msg_parts.append(f"• {r['server_name']}: {r.get('expiry')} ({r.get('days_left')}天)")
-            
+                    msg.append(f"• {r['name']}: {r.get('expiry')} ({r.get('days')}天)")
             if not_yet:
-                msg_parts.append('\nℹ️ <b>暂不能续订:</b>')
+                msg.append('\nℹ️ <b>暂不能续订:</b>')
                 for r in not_yet:
-                    msg_parts.append(f"• {r['server_name']}")
-            
+                    msg.append(f"• {r['name']}")
             if failed:
-                msg_parts.append('\n❌ <b>失败:</b>')
+                msg.append('\n❌ <b>失败:</b>')
                 for r in failed:
-                    msg_parts.append(f"• {r['server_name']}: {r.get('message', '?')}")
+                    msg.append(f"• {r['name']}: {r.get('msg', '?')}")
             
-            tg_notify('\n'.join(msg_parts))
+            tg_notify('\n'.join(msg))
             
             return len(failed) == 0
 
