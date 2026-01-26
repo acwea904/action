@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       debug:
-        description: '调试模式（跳过天数检查，强制执行）'
+        description: '调试模式'
         required: false
         default: 'false'
         type: choice
@@ -12,7 +12,7 @@ on:
           - 'true'
           - 'false'
       force_renew:
-        description: '强制续订（忽略剩余天数）'
+        description: '强制续订'
         required: false
         default: 'false'
         type: choice
@@ -34,8 +34,7 @@ jobs:
           python-version: '3.11'
 
       - name: 安装依赖
-        run: |
-          pip install httpx requests
+        run: pip install requests
 
       - name: 下载 Hysteria2
         run: |
@@ -88,3 +87,12 @@ jobs:
           HTTP_PROXY: http://127.0.0.1:8080
           HTTPS_PROXY: http://127.0.0.1:8080
         run: python scripts/katabump_renew.py
+
+      - name: 上传调试文件
+        if: always() && github.event.inputs.debug == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-files-${{ github.run_number }}
+          path: /tmp/*.html
+          retention-days: 3
+          if-no-files-found: ignore
