@@ -9,6 +9,10 @@ jobs:
   renew:
     runs-on: ubuntu-latest
 
+    env:
+      # 全局设置 Playwright 浏览器路径
+      PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright
+
     steps:
       - uses: actions/checkout@v4
 
@@ -69,14 +73,10 @@ jobs:
           KATA_SERVER_ID: ${{ secrets.KATA_SERVER_ID }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-
           SCREENSHOT_DIR: /tmp
-          PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
-
           HTTP_PROXY: http://127.0.0.1:8080
           HTTPS_PROXY: http://127.0.0.1:8080
           ALL_PROXY: http://127.0.0.1:8080
-
         run: xvfb-run --auto-servernum python scripts/katabump_renew.py
 
       - name: 上传截图
