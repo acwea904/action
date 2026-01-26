@@ -76,9 +76,7 @@ jobs:
 
       - name: 运行续订
         env:
-          KATA_EMAIL: ${{ secrets.KATA_EMAIL }}
-          KATA_PASSWORD: ${{ secrets.KATA_PASSWORD }}
-          CF_CLEARANCE: ${{ secrets.CF_CLEARANCE }}
+          KATA_COOKIES: ${{ secrets.KATA_COOKIES }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           DEBUG_MODE: ${{ github.event.inputs.debug || 'false' }}
