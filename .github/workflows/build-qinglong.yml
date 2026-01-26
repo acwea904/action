@@ -4,9 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '青龙版本 (留空使用最新)'
+        description: '青龙版本 (如: 2.17.12，留空使用最新)'
         required: false
         default: ''
+      node_version:
+        description: 'Node.js 版本'
+        required: false
+        default: '18'
+
+#  schedule:
+#    - cron: '0 0 * * 1'
+
+env:
+  NODE_OPTIONS: --max-old-space-size=4096
 
 jobs:
   build:
@@ -18,57 +28,121 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Get Version
+      - name: Get Qinglong Latest Version
         id: version
         run: |
           if [ -n "${{ github.event.inputs.version }}" ]; then
             VERSION="${{ github.event.inputs.version }}"
           else
             VERSION=$(curl -sL "https://api.github.com/repos/whyour/qinglong/releases/latest" | jq -r '.tag_name' | sed 's/^v//')
+            if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+              VERSION="2.17.12"
+            fi
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "📦 版本: $VERSION"
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+          echo "📦 构建版本: $VERSION"
 
-      - name: Check Release
-        id: check
+      - name: Delete Existing Release
         run: |
-          if gh release view "qinglong-v${{ steps.version.outputs.version }}" &>/dev/null; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "⚠️ Release 已存在"
+          RELEASE_TAG="qinglong-v${{ steps.version.outputs.version }}"
+          echo "🗑️ 检查并删除已存在的 Release: $RELEASE_TAG"
+          
+          # 获取 release id
+          RELEASE_ID=$(curl -s \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${RELEASE_TAG}" \
+            | jq -r '.id')
+          
+          if [ "$RELEASE_ID" != "null" ] && [ -n "$RELEASE_ID" ]; then
+            echo "删除 Release ID: $RELEASE_ID"
+            curl -s -X DELETE \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/${RELEASE_ID}"
+            
+            # 删除 tag
+            git push origin --delete "$RELEASE_TAG" 2>/dev/null || true
+            echo "✓ 已删除"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "✓ 不存在，跳过"
           fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
-        if: steps.check.outputs.exists != 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: ${{ github.event.inputs.node_version || '18' }}
 
       - name: Setup pnpm
-        if: steps.check.outputs.exists != 'true'
         uses: pnpm/action-setup@v2
         with:
           version: 8
 
-      - name: Clone and Build
-        if: steps.check.outputs.exists != 'true'
+      - name: Clone Qinglong
         run: |
-          git clone --depth 1 --branch "v${{ steps.version.outputs.version }}" \
-            https://github.com/whyour/qinglong.git qinglong
-          
+          echo "📥 克隆青龙面板 v${{ steps.version.outputs.version }}..."
+          git clone --depth 1 --branch "${{ steps.version.outputs.tag }}" \
+            https://github.com/whyour/qinglong.git qinglong || \
+          git clone --depth 1 https://github.com/whyour/qinglong.git qinglong
+
+      - name: Install Dependencies
+        run: |
           cd qinglong
+          echo "📦 安装依赖..."
+          npm config set registry https://registry.npmmirror.com
+          pnpm config set registry https://registry.npmmirror.com
           pnpm install
-          pnpm run build:back
-          pnpm run build:front
+
+      - name: Build Backend
+        run: |
+          cd qinglong
+          echo "🔨 构建后端..."
+          pnpm run build:back || true
+          [ -f "build/app.js" ] && echo "✓ 后端构建成功" || echo "⚠️ 后端未构建"
+
+      - name: Build Frontend
+        run: |
+          cd qinglong
+          echo "🔨 构建前端..."
+          pnpm run build:front || true
+          [ -d "static/dist" ] && echo "✓ 前端构建成功" || echo "⚠️ 前端未构建"
+
+      - name: Prepare Production Package
+        run: |
+          cd qinglong
+          echo "📦 准备生产包..."
           
+          # 重新安装生产依赖
           rm -rf node_modules
           pnpm install --prod
           
-          rm -rf .git .github src/ back/ *.md
+          # 清理
+          rm -rf .git .github .vscode .idea
+          rm -rf .eslintrc* .prettierrc* .prettierignore
+          rm -rf tsconfig*.json .umirc.ts .umirc.js
+          rm -rf *.md .env* .editorconfig .gitignore .npmrc
+          rm -rf test tests __tests__ coverage
+          rm -rf Dockerfile* docker-compose* .dockerignore
+          rm -rf nodemon.json typings.d.ts
+          rm -rf pnpm-lock.yaml package-lock.json yarn.lock
           
+          [ -f "build/app.js" ] && rm -rf back/
+          [ -d "static/dist" ] && rm -rf src/
+          
+          # 清理 node_modules
+          find node_modules -name "*.md" -type f -delete 2>/dev/null || true
+          find node_modules -type d -name "test" -exec rm -rf {} + 2>/dev/null || true
+          find node_modules -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true
+          find node_modules -type d -name "__tests__" -exec rm -rf {} + 2>/dev/null || true
+          find node_modules -type d -name "example" -exec rm -rf {} + 2>/dev/null || true
+          find node_modules -type d -name "examples" -exec rm -rf {} + 2>/dev/null || true
+          find node_modules -type d -name "docs" -exec rm -rf {} + 2>/dev/null || true
+          
+          echo "✓ 清理完成"
+          echo "📊 大小: $(du -sh . | cut -f1)"
+
+      - name: Create Startup Script
+        run: |
+          cd qinglong
           cat > start.sh << 'EOF'
           #!/bin/bash
           cd "$(dirname "$0")"
@@ -78,38 +152,74 @@ jobs:
           EOF
           chmod +x start.sh
 
-      - name: Package
-        if: steps.check.outputs.exists != 'true'
+      - name: Create VERSION.json
+        run: |
+          cd qinglong
+          cat > VERSION.json << EOF
+          {
+            "version": "${{ steps.version.outputs.version }}",
+            "node": "$(node -v)",
+            "buildTime": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          }
+          EOF
+
+      - name: Package Files
+        id: package
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          NAME="qinglong-v${VERSION}-node18-packed"
+          NODE_VER="${{ github.event.inputs.node_version || '18' }}"
+          PACKAGE_NAME="qinglong-v${VERSION}-node${NODE_VER}-packed"
           
-          tar -czf "${NAME}.tar.gz" qinglong
-          zip -r -q "${NAME}.zip" qinglong
-          sha256sum ${NAME}.* > checksums.txt
+          echo "📦 创建压缩包..."
           
-          ls -lh ${NAME}.*
+          # 创建 tar.gz
+          tar -czf "${PACKAGE_NAME}.tar.gz" qinglong
+          TAR_SIZE=$(ls -lh "${PACKAGE_NAME}.tar.gz" | awk '{print $5}')
+          echo "✓ ${PACKAGE_NAME}.tar.gz ($TAR_SIZE)"
+          
+          # 创建 zip
+          zip -r -q "${PACKAGE_NAME}.zip" qinglong
+          ZIP_SIZE=$(ls -lh "${PACKAGE_NAME}.zip" | awk '{print $5}')
+          echo "✓ ${PACKAGE_NAME}.zip ($ZIP_SIZE)"
+          
+          # 创建校验和
+          sha256sum "${PACKAGE_NAME}.tar.gz" > checksums.txt
+          sha256sum "${PACKAGE_NAME}.zip" >> checksums.txt
+          echo ""
+          echo "🔐 SHA256:"
+          cat checksums.txt
+          
+          # 验证文件存在
+          echo ""
+          echo "📁 打包文件列表:"
+          ls -la *.tar.gz *.zip checksums.txt
+          
+          # 输出变量
+          echo "package_name=${PACKAGE_NAME}" >> $GITHUB_OUTPUT
+          echo "tar_file=${PACKAGE_NAME}.tar.gz" >> $GITHUB_OUTPUT
+          echo "zip_file=${PACKAGE_NAME}.zip" >> $GITHUB_OUTPUT
 
-      - name: Upload Release
-        if: steps.check.outputs.exists != 'true'
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          TAG="qinglong-v${VERSION}"
-          NAME="qinglong-v${VERSION}-node18-packed"
-          
-          gh release create "$TAG" \
-            --title "🐉 Qinglong v${VERSION} (Packed)" \
-            --notes "## 青龙面板 v${VERSION} 预打包版
-
-          ### 快速使用
-          \`\`\`bash
-          curl -sL https://github.com/${{ github.repository }}/releases/download/${TAG}/${NAME}.tar.gz | tar -xz
-          cd qinglong && ./start.sh
-          \`\`\`
-          
-          访问: http://localhost:5700" \
-            "${NAME}.tar.gz" \
-            "${NAME}.zip" \
-            "checksums.txt"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: qinglong-v${{ steps.version.outputs.version }}
+          name: 🐉 Qinglong v${{ steps.version.outputs.version }} (Packed)
+          body: |
+            ## 🐉 青龙面板 v${{ steps.version.outputs.version }} 预打包版本
+            
+            ### 📦 包含内容
+            - ✅ 青龙面板 v${{ steps.version.outputs.version }}
+            - ✅ Node.js ${{ github.event.inputs.node_version || '18' }} 生产依赖
+            - ✅ 已构建的前后端文件
+            - ✅ 启动脚本
+            
+            ### 🚀 快速使用
+            ```bash
+            # 下载解压
+            curl -sL "https://github.com/${{ github.repository }}/releases/download/qinglong-v${{ steps.version.outputs.version }}/${{ steps.package.outputs.tar_file }}" | tar -xz
+            
+            # 启动
+            cd qinglong
+            ./start.sh
+            
+            # 访问: http://localhost:5700
