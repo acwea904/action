@@ -21,7 +21,7 @@ KATA_COOKIES = os.environ.get('KATA_COOKIES', '')
 TG_BOT_TOKEN = os.environ.get('TG_BOT_TOKEN', '')
 TG_CHAT_ID = os.environ.get('TG_CHAT_ID', '')
 FORCE_RENEW = os.environ.get('FORCE_RENEW', 'false').lower() == 'true'
-RENEW_THRESHOLD_DAYS = 2
+RENEW_THRESHOLD_DAYS = 1  # 到期前 1 天自动续订
 
 # GitHub 相关
 REPO_TOKEN = os.environ.get('REPO_TOKEN', '')
