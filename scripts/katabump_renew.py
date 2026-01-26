@@ -42,6 +42,26 @@ def tg_notify(message):
         pass
 
 
+def tg_send_html(html_content, filename, caption=''):
+    """保存 HTML 并发送到 Telegram 用于诊断"""
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        return False
+    try:
+        file_path = f'/tmp/{filename}'
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        with open(file_path, 'rb') as f:
+            resp = requests.post(
+                f'https://api.telegram.org/bot{TG_BOT_TOKEN}/sendDocument',
+                data={'chat_id': TG_CHAT_ID, 'caption': caption},
+                files={'document': f},
+                timeout=60, proxies={'http': None, 'https': None}
+            )
+        return resp.status_code == 200
+    except:
+        return False
+
+
 def days_until(date_str):
     if not date_str:
         return None
@@ -69,6 +89,7 @@ def get_csrf(html):
 class KataBumpRenewer:
     def __init__(self):
         self.base_url = 'https://dashboard.katabump.com'
+        self.last_html = ''
         
         self.headers = {
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -102,27 +123,44 @@ class KataBumpRenewer:
             headers['accept'] = 'application/json, text/plain, */*'
             headers['sec-fetch-dest'] = 'empty'
             headers['sec-fetch-mode'] = 'cors'
-        return requests.get(url, headers=headers, proxies=self.proxies, timeout=60)
+        
+        resp = requests.get(url, headers=headers, proxies=self.proxies, timeout=60)
+        
+        if not json_response:
+            self.last_html = resp.text
+        
+        return resp
 
     def post(self, path, data):
         url = f'{self.base_url}{path}'
         headers = self.headers.copy()
         headers['content-type'] = 'application/x-www-form-urlencoded'
         headers['origin'] = self.base_url
-        return requests.post(url, data=data, headers=headers, proxies=self.proxies, timeout=60)
+        
+        resp = requests.post(url, data=data, headers=headers, proxies=self.proxies, timeout=60)
+        self.last_html = resp.text
+        
+        return resp
 
     def get_servers(self):
         log('获取服务器列表...')
         
         resp = self.get('/dashboard')
+        
+        # 检查登录状态
         if '/auth/login' in str(resp.url) or 'name="password"' in resp.text:
+            # 发送页面到 TG 帮助诊断
+            tg_send_html(self.last_html, 'login_check.html', 
+                f'❌ Cookie 检查失败\n\nURL: {resp.url}\n状态码: {resp.status_code}\n长度: {len(resp.text)}')
             raise Exception('Cookie 已过期，请更新 KATA_COOKIES')
         
         resp = self.get('/api-client/list-servers', json_response=True)
         
         try:
             servers = resp.json()
-        except:
+        except Exception as e:
+            self.last_html = resp.text
+            tg_send_html(resp.text, 'api_error.html', f'❌ API 返回非 JSON\n\n{e}')
             raise Exception('API 返回非 JSON 数据')
         
         if not isinstance(servers, list):
@@ -204,7 +242,7 @@ class KataBumpRenewer:
                 return {
                     'id': server_id, 'name': name, 
                     'expiry': expiry, 'days': days,
-                    'action': 'not_yet', 'msg': msg, 'ok': True
+                    'action': 'not_yet', 'ok': True
                 }
             
             return {'id': server_id, 'name': name, 'action': 'failed', 'msg': msg, 'ok': False}
