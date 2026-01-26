@@ -3,14 +3,6 @@ name: KataBump 自动续订
 on:
   workflow_dispatch:
     inputs:
-      debug:
-        description: '调试模式'
-        required: false
-        default: 'false'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
       force_renew:
         description: '强制续订'
         required: false
@@ -79,17 +71,7 @@ jobs:
           KATA_COOKIES: ${{ secrets.KATA_COOKIES }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          DEBUG_MODE: ${{ github.event.inputs.debug || 'false' }}
           FORCE_RENEW: ${{ github.event.inputs.force_renew || 'false' }}
           HTTP_PROXY: http://127.0.0.1:8080
           HTTPS_PROXY: http://127.0.0.1:8080
         run: python scripts/katabump_renew.py
-
-      - name: 上传调试文件
-        if: always() && github.event.inputs.debug == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-files-${{ github.run_number }}
-          path: /tmp/*.html
-          retention-days: 3
-          if-no-files-found: ignore
