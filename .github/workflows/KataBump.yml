@@ -2,18 +2,19 @@ name: KataBump 自动续订
 
 on:
   schedule:
-    - cron: '0 8 * * *'
+    - cron: '0 1 * * *'
   workflow_dispatch:
     inputs:
       force_renew:
-        description: '强制续订（忽略到期时间检查）'
+        description: '强制续订'
         required: false
-        default: 'false'
         type: boolean
+        default: false
 
 jobs:
   renew:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +24,10 @@ jobs:
           python-version: '3.11'
 
       - name: 安装依赖
-        run: pip install requests pynacl
+        run: |
+          pip install requests pynacl playwright
+          playwright install chromium
+          playwright install-deps chromium
 
       - name: 下载 Hysteria2
         run: |
@@ -61,16 +65,32 @@ jobs:
         run: |
           ./hysteria client -c hy2-config.yaml > /dev/null 2>&1 &
           sleep 3
+          curl -s --proxy http://127.0.0.1:8080 https://ipinfo.io/ip || echo "代理测试"
           echo "✅ 代理已启动"
 
-      - name: 运行续订
+      - name: 恢复浏览器 Profile
+        uses: actions/cache/restore@v4
+        with:
+          path: pw_profiles
+          key: KataBump-profiles-${{ github.run_id }}
+          restore-keys: |
+            KataBump-profiles-
+
+      - name: 运行续订脚本
         env:
           KATA_COOKIES: ${{ secrets.KATA_COOKIES }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          FORCE_RENEW: ${{ github.event.inputs.force_renew || 'false' }}
-          HTTP_PROXY: http://127.0.0.1:8080
-          HTTPS_PROXY: http://127.0.0.1:8080
+          FORCE_RENEW: ${{ inputs.force_renew }}
+          PROFILE_DIR: pw_profiles/katabump
+          PROXY_SERVER: http://127.0.0.1:8080
         run: python scripts/katabump_renew.py
+
+      - name: 保存浏览器 Profile
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: pw_profiles
+          key: KataBump-profiles-${{ github.run_id }}
