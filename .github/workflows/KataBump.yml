@@ -2,18 +2,20 @@ name: KataBump 自动续订
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '17 9,21 * * *'
 
 jobs:
   renew:
     runs-on: ubuntu-latest
-    
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
+
       - name: 安装依赖
         run: |
           sudo apt-get update
@@ -59,7 +61,7 @@ jobs:
           ./hysteria client -c hy2-config.yaml > /dev/null 2>&1 &
           sleep 3
           echo "✅ 代理已启动"
-      
+
       - name: 运行续订
         env:
           KATA_EMAIL: ${{ secrets.KATA_EMAIL }}
@@ -67,10 +69,16 @@ jobs:
           KATA_SERVER_ID: ${{ secrets.KATA_SERVER_ID }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+
           SCREENSHOT_DIR: /tmp
+          PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
+
           HTTP_PROXY: http://127.0.0.1:8080
+          HTTPS_PROXY: http://127.0.0.1:8080
+          ALL_PROXY: http://127.0.0.1:8080
+
         run: xvfb-run --auto-servernum python scripts/katabump_renew.py
-      
+
       - name: 上传截图
         if: always()
         uses: actions/upload-artifact@v4
