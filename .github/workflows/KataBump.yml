@@ -67,8 +67,10 @@ jobs:
           echo "✅ 代理已启动"
 
       - name: 运行续订
-        env:
+       env:
           KATA_COOKIES: ${{ secrets.KATA_COOKIES }}
+          REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           FORCE_RENEW: ${{ github.event.inputs.force_renew || 'false' }}
