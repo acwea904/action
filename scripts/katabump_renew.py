@@ -49,127 +49,49 @@ def days_until(date_str):
         return None
 
 
-def parse_cookies(cookie_str):
-    """解析 cookie 字符串为字典"""
-    cookies = {}
-    if cookie_str:
-        for item in cookie_str.split(';'):
-            item = item.strip()
-            if '=' in item:
-                k, v = item.split('=', 1)
-                cookies[k.strip()] = v.strip()
-    return cookies
-
-
 class KataBumpRenewer:
     def __init__(self):
         self.base = 'https://dashboard.katabump.com'
-        
-        # 使用 Session 保持 Cookie
-        self.session = requests.Session()
-        
-        # 设置初始 Cookie
-        initial_cookies = parse_cookies(KATA_COOKIES)
-        for k, v in initial_cookies.items():
-            self.session.cookies.set(k, v, domain='dashboard.katabump.com')
-        
-        # 设置请求头
-        self.session.headers.update({
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        self.headers = {
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'accept-encoding': 'gzip, deflate',
             'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'cache-control': 'no-cache',
-            'pragma': 'no-cache',
-            'sec-ch-ua': '"Not(A:Brand";v="8", "Chromium";v="144"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Windows"',
-            'sec-fetch-dest': 'document',
-            'sec-fetch-mode': 'navigate',
-            'sec-fetch-site': 'same-origin',
-            'sec-fetch-user': '?1',
-            'upgrade-insecure-requests': '1',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
-        })
-        
-        # 设置代理
+            'cookie': KATA_COOKIES,
+            'referer': 'https://dashboard.katabump.com/dashboard',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/144.0.0.0 Safari/537.36',
+        }
         proxy = os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY')
+        self.proxies = {'http': proxy, 'https': proxy} if proxy else None
         if proxy:
-            self.session.proxies = {'http': proxy, 'https': proxy}
             log(f'使用代理: {proxy}')
 
     def get(self, path, json_resp=False):
-        url = f'{self.base}{path}'
-        headers = {}
+        headers = self.headers.copy()
         if json_resp:
-            headers['accept'] = 'application/json, text/plain, */*'
-            headers['sec-fetch-dest'] = 'empty'
-            headers['sec-fetch-mode'] = 'cors'
-        
-        resp = self.session.get(url, headers=headers, timeout=60)
-        
+            headers['accept'] = 'application/json'
+        resp = requests.get(f'{self.base}{path}', headers=headers, proxies=self.proxies, timeout=60)
         if DEBUG_MODE:
             log(f'GET {path} -> {resp.status_code}', 'DEBUG')
-            log(f'Cookies: {dict(self.session.cookies)}', 'DEBUG')
-        
         return resp
 
     def post(self, path, data):
-        url = f'{self.base}{path}'
-        headers = {
-            'content-type': 'application/x-www-form-urlencoded',
-            'origin': self.base,
-        }
-        resp = self.session.post(url, data=data, headers=headers, timeout=60)
-        
+        headers = self.headers.copy()
+        headers['content-type'] = 'application/x-www-form-urlencoded'
+        headers['origin'] = self.base
+        resp = requests.post(f'{self.base}{path}', data=data, headers=headers, proxies=self.proxies, timeout=60)
         if DEBUG_MODE:
             log(f'POST {path} -> {resp.status_code}', 'DEBUG')
-        
         return resp
 
-    def check_login(self, html, url):
-        """检查是否已登录"""
-        url_str = str(url)
-        # 检查是否被重定向到登录页
-        if '/auth/login' in url_str:
-            return False
-        # 检查页面是否是登录页
-        if 'name="password"' in html and 'name="email"' in html and 'Login' in html:
-            return False
-        # 检查是否有用户信息（已登录的标志）
-        if 'dropdown-toggle' in html and 'Logout' in html:
-            return True
-        # 检查是否有 dashboard 内容
-        if 'Your servers' in html or 'api-client/list-servers' in html:
-            return True
-        return True  # 默认认为已登录
-
     def get_servers(self):
-        log('获取服务器列表...')
-        
-        # 访问 dashboard
+        # 先访问 dashboard 确保登录
         resp = self.get('/dashboard')
+        if '/auth/login' in str(resp.url) or 'name="password"' in resp.text:
+            raise Exception('Cookie 已过期')
         
-        if not self.check_login(resp.text, resp.url):
-            log('登录检查失败，尝试访问 API...', 'WARNING')
-        
-        # 调用 API 获取服务器列表
+        # 调用 API
         resp = self.get('/api-client/list-servers', json_resp=True)
-        
-        if DEBUG_MODE:
-            log(f'API 响应: {resp.text[:200]}...', 'DEBUG')
-        
-        # 检查是否返回 HTML（未登录）
-        if resp.text.strip().startswith('<!') or resp.text.strip().startswith('<html'):
-            raise Exception('Cookie 已过期，API 返回 HTML')
-        
-        try:
-            servers = resp.json()
-        except Exception as e:
-            log(f'JSON 解析失败: {resp.text[:100]}', 'ERROR')
-            raise Exception(f'Cookie 已过期或 API 错误')
-        
-        if not isinstance(servers, list):
-            raise Exception(f'API 返回格式错误: {servers}')
+        servers = resp.json()
         
         if not servers:
             return []
@@ -179,14 +101,11 @@ class KataBumpRenewer:
     def process_server(self, sid, name):
         log(f'处理: {name} (ID: {sid})')
         
-        # 设置 referer
-        self.session.headers['referer'] = f'{self.base}/dashboard'
-        
         # 获取服务器页面
         resp = self.get(f'/servers/edit?id={sid}')
         html = resp.text
         
-        if not self.check_login(html, resp.url):
+        if '/auth/login' in str(resp.url):
             return {'name': name, 'action': 'error', 'msg': 'Cookie过期', 'ok': False}
         
         # 获取到期时间
@@ -204,17 +123,12 @@ class KataBumpRenewer:
         # 获取 CSRF
         m = re.search(r'name="csrf"[^>]*value="([^"]+)"', html) or re.search(r'value="([^"]+)"[^>]*name="csrf"', html)
         if not m:
-            log('  未找到 CSRF token', 'WARNING')
-            # 尝试其他模式
-            m = re.search(r'"csrf"\s*:\s*"([^"]+)"', html) or re.search(r'csrf["\s:]+([a-f0-9]{32,})', html, re.I)
-        
-        if not m:
             return {'name': name, 'action': 'error', 'msg': '无CSRF', 'ok': False}
         csrf = m.group(1)
         
         # 执行续订
         log(f'  执行续订...')
-        self.session.headers['referer'] = f'{self.base}/servers/edit?id={sid}'
+        self.headers['referer'] = f'{self.base}/servers/edit?id={sid}'
         resp = self.post(f'/api-client/renew?id={sid}', {'csrf': csrf})
         url = str(resp.url)
         
@@ -242,9 +156,6 @@ class KataBumpRenewer:
         
         if not KATA_COOKIES:
             raise Exception('未设置 KATA_COOKIES')
-        
-        if DEBUG_MODE:
-            log('调试模式已开启', 'DEBUG')
         
         servers = self.get_servers()
         log(f'找到 {len(servers)} 个服务器')
