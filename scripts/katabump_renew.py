@@ -78,21 +78,23 @@ class KataBumpRenewer:
         
         # 完全模拟浏览器请求头
         self.headers = {
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Accept-Language': 'zh-CN,zh;q=0.9',
-            'Cache-Control': 'no-cache',
-            'Cookie': KATA_COOKIES,
-            'Pragma': 'no-cache',
-            'Sec-Ch-Ua': '"Not)A;Brand";v="24", "Chromium";v="116"',
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Upgrade-Insecure-Requests': '1',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.5845.97 Safari/537.36',
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'accept-encoding': 'gzip, deflate, br, zstd',
+            'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'cache-control': 'no-cache',
+            'cookie': KATA_COOKIES,
+            'pragma': 'no-cache',
+            'priority': 'u=0, i',
+            'referer': 'https://dashboard.katabump.com/auth/login',
+            'sec-ch-ua': '"Not(A:Brand";v="8", "Chromium";v="144", "Google Chrome";v="144"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'document',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-site': 'same-origin',
+            'sec-fetch-user': '?1',
+            'upgrade-insecure-requests': '1',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
         }
         
         # 设置代理
@@ -114,21 +116,17 @@ class KataBumpRenewer:
             log(f'状态: {resp.status_code}', 'DEBUG')
         return resp
 
-    def post(self, path, data, referer):
+    def post(self, path, data):
         """POST 请求"""
         url = f'{self.base_url}{path}'
         if DEBUG_MODE:
             log(f'POST {url}', 'DEBUG')
         
         headers = self.headers.copy()
-        headers.update({
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Origin': self.base_url,
-            'Referer': referer,
-            'Sec-Fetch-Site': 'same-origin',
-        })
+        headers['content-type'] = 'application/x-www-form-urlencoded'
+        headers['origin'] = self.base_url
         
-        resp = requests.post(url, headers=headers, data=data, proxies=self.proxies, timeout=60)
+        resp = requests.post(url, data=data, headers=headers, proxies=self.proxies, timeout=60)
         
         if DEBUG_MODE:
             log(f'状态: {resp.status_code}, URL: {resp.url}', 'DEBUG')
@@ -142,7 +140,6 @@ class KataBumpRenewer:
         if DEBUG_MODE:
             with open('/tmp/dashboard.html', 'w') as f:
                 f.write(resp.text)
-            log(f'页面长度: {len(resp.text)}', 'DEBUG')
         
         # 检查登录状态
         if '/auth/login' in str(resp.url) or 'name="password"' in resp.text:
@@ -156,9 +153,6 @@ class KataBumpRenewer:
         servers = list(dict.fromkeys(ids))  # 去重保持顺序
         
         if not servers:
-            # 打印部分页面内容帮助调试
-            if DEBUG_MODE:
-                log(f'页面内容片段: {resp.text[:500]}', 'DEBUG')
             raise Exception('未找到服务器')
         
         log(f'找到 {len(servers)} 个服务器: {servers}', 'SUCCESS')
@@ -168,6 +162,9 @@ class KataBumpRenewer:
         """处理单个服务器"""
         log(f'')
         log(f'━━━ 服务器 {server_id} ━━━')
+        
+        # 更新 referer
+        self.headers['referer'] = f'{self.base_url}/dashboard'
         
         # 获取服务器页面
         resp = self.get(f'/servers/edit?id={server_id}')
@@ -203,8 +200,10 @@ class KataBumpRenewer:
         if not csrf:
             return {'id': server_id, 'name': name, 'action': 'error', 'msg': '无法获取 CSRF', 'ok': False}
         
-        referer = f'{self.base_url}/servers/edit?id={server_id}'
-        resp = self.post(f'/api-client/renew?id={server_id}', {'csrf': csrf}, referer)
+        # 更新 referer
+        self.headers['referer'] = f'{self.base_url}/servers/edit?id={server_id}'
+        
+        resp = self.post(f'/api-client/renew?id={server_id}', {'csrf': csrf})
         
         if DEBUG_MODE:
             with open(f'/tmp/renew_{server_id}.html', 'w') as f:
