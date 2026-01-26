@@ -83,28 +83,19 @@ jobs:
           
           cd qinglong
           echo "✓ 克隆完成"
-          
-          # 显示 package.json 中的 scripts
-          echo ""
-          echo "📜 可用的构建脚本:"
-          cat package.json | jq -r '.scripts | to_entries[] | "  \(.key): \(.value)"'
 
       - name: Install All Dependencies
         if: steps.check_release.outputs.exists != 'true'
         run: |
           cd qinglong
-          echo "📦 安装所有依赖（包括开发依赖）..."
+          echo "📦 安装所有依赖..."
           
           npm config set registry https://registry.npmmirror.com
           pnpm config set registry https://registry.npmmirror.com
           
-          # 安装所有依赖（需要开发依赖来构建）
           pnpm install
           
           echo "✓ 依赖安装完成"
-          echo ""
-          echo "📊 node_modules 大小:"
-          du -sh node_modules
 
       - name: Build Backend
         if: steps.check_release.outputs.exists != 'true'
@@ -112,18 +103,9 @@ jobs:
           cd qinglong
           echo "🔨 构建后端..."
           
-          # 检查并执行后端构建
           if grep -q '"build:back"' package.json; then
             pnpm run build:back
             echo "✓ 后端构建完成"
-          else
-            echo "⚠️ 未找到 build:back 脚本"
-          fi
-          
-          # 检查构建结果
-          if [ -d "build" ]; then
-            echo "📁 build/ 目录内容:"
-            ls -la build/
           fi
 
       - name: Build Frontend
@@ -132,26 +114,10 @@ jobs:
           cd qinglong
           echo "🔨 构建前端..."
           
-          # 检查并执行前端构建
           if grep -q '"build:front"' package.json; then
             pnpm run build:front
             echo "✓ 前端构建完成"
-          else
-            echo "⚠️ 未找到 build:front 脚本，尝试其他方式..."
-            
-            # 尝试使用 umi 构建
-            if [ -f ".umirc.ts" ] || [ -f ".umirc.js" ]; then
-              echo "检测到 UmiJS 配置，尝试构建..."
-              npx umi build || pnpm umi build || true
-            fi
           fi
-          
-          # 检查前端构建结果
-          echo ""
-          echo "📁 检查构建产物:"
-          [ -d "dist" ] && echo "dist/ 存在:" && ls -la dist/ | head -10
-          [ -d "static/dist" ] && echo "static/dist/ 存在:" && ls -la static/dist/ | head -10
-          [ -d "build/public" ] && echo "build/public/ 存在:" && ls -la build/public/ | head -10
 
       - name: Verify Build
         if: steps.check_release.outputs.exists != 'true'
@@ -159,30 +125,21 @@ jobs:
           cd qinglong
           echo "🔍 验证构建结果..."
           
-          # 检查后端构建
+          # 检查后端
           if [ -f "build/app.js" ]; then
-            echo "✓ 后端构建成功: build/app.js"
-          elif [ -d "back" ]; then
-            echo "⚠️ 后端未构建，将使用源文件"
+            echo "✓ 后端: build/app.js"
+          else
+            echo "⚠️ 后端未构建"
           fi
           
-          # 检查前端构建
+          # 检查前端
           if [ -d "static/dist" ] && [ -f "static/dist/index.html" ]; then
-            echo "✓ 前端构建成功: static/dist/"
-          elif [ -d "dist" ] && [ -f "dist/index.html" ]; then
-            echo "✓ 前端构建成功: dist/"
-            # 移动到正确位置
-            mkdir -p static
-            mv dist static/dist
+            echo "✓ 前端: static/dist/"
+            echo "  文件数: $(find static/dist -type f | wc -l)"
+            echo "  大小: $(du -sh static/dist | cut -f1)"
           else
             echo "⚠️ 前端未构建"
           fi
-          
-          echo ""
-          echo "📁 当前目录结构:"
-          ls -la
-          [ -d "build" ] && echo "" && echo "build/:" && ls -la build/
-          [ -d "static" ] && echo "" && echo "static/:" && ls -la static/
 
       - name: Prepare Production Package
         if: steps.check_release.outputs.exists != 'true'
@@ -190,16 +147,12 @@ jobs:
           cd qinglong
           echo "📦 准备生产包..."
           
-          # 删除 node_modules，重新安装生产依赖
+          # 重新安装生产依赖
           rm -rf node_modules
-          
-          echo "📦 安装生产依赖..."
           pnpm install --prod
           
-          # 清理不需要的文件和目录
+          # 清理文件
           echo "🧹 清理文件..."
-          
-          # 删除开发相关文件
           rm -rf .git .github .vscode .idea
           rm -rf .eslintrc* .prettierrc* .prettierignore
           rm -rf tsconfig*.json .umirc.ts .umirc.js
@@ -209,50 +162,41 @@ jobs:
           rm -rf nodemon.json typings.d.ts
           rm -rf pnpm-lock.yaml package-lock.json yarn.lock
           
-          # 如果后端已构建，删除源文件
+          # 如果已构建，删除源文件
           if [ -f "build/app.js" ]; then
-            echo "删除后端源文件..."
             rm -rf back/
           fi
           
-          # 如果前端已构建，删除源文件
           if [ -d "static/dist" ] && [ -f "static/dist/index.html" ]; then
-            echo "删除前端源文件..."
             rm -rf src/
           fi
           
           # 清理 node_modules
-          echo "清理 node_modules..."
-          find node_modules -name "*.md" -delete 2>/dev/null || true
-          find node_modules -name "*.ts" -not -name "*.d.ts" -delete 2>/dev/null || true
-          find node_modules -name "test" -type d -exec rm -rf {} + 2>/dev/null || true
-          find node_modules -name "tests" -type d -exec rm -rf {} + 2>/dev/null || true
-          find node_modules -name "__tests__" -type d -exec rm -rf {} + 2>/dev/null || true
-          find node_modules -name "example" -type d -exec rm -rf {} + 2>/dev/null || true
-          find node_modules -name "examples" -type d -exec rm -rf {} + 2>/dev/null || true
-          find node_modules -name ".github" -type d -exec rm -rf {} + 2>/dev/null || true
-          find node_modules -name "docs" -type d -exec rm -rf {} + 2>/dev/null || true
-          find node_modules -name "*.map" -delete 2>/dev/null || true
+          find node_modules -name "*.md" -type f -delete 2>/dev/null || true
+          find node_modules -name "*.ts" -not -name "*.d.ts" -type f -delete 2>/dev/null || true
+          find node_modules -type d -name "test" -exec rm -rf {} + 2>/dev/null || true
+          find node_modules -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true
+          find node_modules -type d -name "__tests__" -exec rm -rf {} + 2>/dev/null || true
+          find node_modules -type d -name "example" -exec rm -rf {} + 2>/dev/null || true
+          find node_modules -type d -name "examples" -exec rm -rf {} + 2>/dev/null || true
+          find node_modules -type d -name ".github" -exec rm -rf {} + 2>/dev/null || true
+          find node_modules -type d -name "docs" -exec rm -rf {} + 2>/dev/null || true
+          find node_modules -name "*.map" -type f -delete 2>/dev/null || true
           
           echo "✓ 清理完成"
-          
-          # 显示最终结果
+
+      - name: Show Package Info
+        if: steps.check_release.outputs.exists != 'true'
+        run: |
+          cd qinglong
+          echo "📊 包信息:"
+          echo "  总大小: $(du -sh . | cut -f1)"
+          echo "  node_modules: $(du -sh node_modules | cut -f1)"
+          [ -d "build" ] && echo "  build: $(du -sh build | cut -f1)"
+          [ -d "static" ] && echo "  static: $(du -sh static | cut -f1)"
           echo ""
-          echo "📊 最终包大小:"
-          du -sh .
-          du -sh node_modules
-          [ -d "build" ] && du -sh build
-          [ -d "static" ] && du -sh static
-          
-          echo ""
-          echo "📁 最终目录结构:"
+          echo "📁 目录结构:"
           ls -la
-          
-          echo ""
-          echo "📁 重要目录内容:"
-          [ -d "build" ] && echo "build/:" && ls -la build/
-          [ -d "static" ] && echo "static/:" && ls -la static/
-          [ -d "shell" ] && echo "shell/:" && ls -la shell/
 
       - name: Create Version Info
         if: steps.check_release.outputs.exists != 'true'
@@ -262,84 +206,58 @@ jobs:
           {
             "version": "${{ steps.version.outputs.version }}",
             "node": "$(node -v)",
-            "pnpm": "$(pnpm -v)",
             "buildTime": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-            "buildBy": "GitHub Actions",
-            "repository": "${{ github.repository }}",
-            "hasBuild": $([ -f "build/app.js" ] && echo "true" || echo "false"),
-            "hasFrontend": $([ -d "static/dist" ] && echo "true" || echo "false")
+            "repository": "${{ github.repository }}"
           }
           EOF
-          echo "📄 VERSION.json:"
-          cat VERSION.json
 
       - name: Create Startup Script
         if: steps.check_release.outputs.exists != 'true'
         run: |
           cd qinglong
-          
-          # 创建启动脚本
-          cat > start.sh << 'EOF'
+          cat > start.sh << 'SCRIPT'
           #!/bin/bash
-          
-          # 青龙面板启动脚本
           cd "$(dirname "$0")"
-          
-          # 默认端口
           export QlPort=${QlPort:-5700}
-          export QlBaseUrl=${QlBaseUrl:-/}
-          
-          echo "🐉 启动青龙面板..."
-          echo "   端口: $QlPort"
-          echo "   路径: $QlBaseUrl"
-          
-          # 检查启动方式
+          echo "🐉 启动青龙面板 (端口: $QlPort)"
           if [ -f "build/app.js" ]; then
-            echo "   模式: 已构建"
             exec node build/app.js
-          elif [ -f "back/app.ts" ]; then
-            echo "   模式: 源码 (需要 ts-node)"
-            exec npx ts-node back/app.ts
           else
-            echo "❌ 未找到入口文件"
+            echo "❌ 未找到 build/app.js"
             exit 1
           fi
-          EOF
-          
+          SCRIPT
           chmod +x start.sh
-          echo "✓ 创建启动脚本: start.sh"
 
-      - name: Package - tar.gz
+      - name: Package
         if: steps.check_release.outputs.exists != 'true'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           NODE_VER="${{ github.event.inputs.node_version || '18' }}"
           PACKAGE_NAME="qinglong-v${VERSION}-node${NODE_VER}-packed"
           
-          echo "📦 创建 ${PACKAGE_NAME}.tar.gz..."
+          echo "📦 打包 ${PACKAGE_NAME}..."
+          
+          # tar.gz
           tar -czf "${PACKAGE_NAME}.tar.gz" qinglong
+          echo "✓ ${PACKAGE_NAME}.tar.gz ($(ls -lh ${PACKAGE_NAME}.tar.gz | awk '{print $5}'))"
           
-          ls -lh "${PACKAGE_NAME}.tar.gz"
+          # zip
+          zip -r -q "${PACKAGE_NAME}.zip" qinglong
+          echo "✓ ${PACKAGE_NAME}.zip ($(ls -lh ${PACKAGE_NAME}.zip | awk '{print $5}'))"
           
-          SHA256=$(sha256sum "${PACKAGE_NAME}.tar.gz" | cut -d' ' -f1)
-          echo "SHA256: $SHA256"
+          # checksums
+          sha256sum "${PACKAGE_NAME}.tar.gz" > checksums.txt
+          sha256sum "${PACKAGE_NAME}.zip" >> checksums.txt
           
-          echo "PACKAGE_NAME=${PACKAGE_NAME}" >> $GITHUB_ENV
-          echo "PACKAGE_SHA256=${SHA256}" >> $GITHUB_ENV
-
-      - name: Package - zip
-        if: steps.check_release.outputs.exists != 'true'
-        run: |
-          echo "📦 创建 ${{ env.PACKAGE_NAME }}.zip..."
-          zip -r -q "${{ env.PACKAGE_NAME }}.zip" qinglong
-          ls -lh "${{ env.PACKAGE_NAME }}.zip"
-
-      - name: Generate Checksums
-        if: steps.check_release.outputs.exists != 'true'
-        run: |
-          sha256sum ${{ env.PACKAGE_NAME }}.tar.gz > checksums.txt
-          sha256sum ${{ env.PACKAGE_NAME }}.zip >> checksums.txt
+          echo ""
+          echo "🔐 SHA256:"
           cat checksums.txt
+          
+          # 保存变量
+          echo "PACKAGE_NAME=${PACKAGE_NAME}" >> $GITHUB_ENV
+          SHA256=$(sha256sum "${PACKAGE_NAME}.tar.gz" | cut -d' ' -f1)
+          echo "PACKAGE_SHA256=${SHA256}" >> $GITHUB_ENV
 
       - name: Create Release
         if: steps.check_release.outputs.exists != 'true'
@@ -354,11 +272,17 @@ jobs:
             - ✅ 青龙面板 v${{ steps.version.outputs.version }}
             - ✅ Node.js ${{ github.event.inputs.node_version || '18' }} 生产依赖
             - ✅ 已构建的前后端文件
-            - ✅ 启动脚本 (start.sh)
+            - ✅ 启动脚本
             
             ### 🚀 快速使用
             
-            **1. 下载并解压：**
             ```bash
+            # 下载解压
             curl -sL "https://github.com/${{ github.repository }}/releases/download/qinglong-v${{ steps.version.outputs.version }}/${{ env.PACKAGE_NAME }}.tar.gz" | tar -xz
+            
+            # 启动
             cd qinglong
+            ./start.sh
+            # 或: QlPort=5800 ./start.sh
+            
+            # 访问: http://localhost:5700
