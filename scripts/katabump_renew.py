@@ -9,10 +9,10 @@ import sys
 import re
 import time
 import random
+import base64
 import requests
 from datetime import datetime, timezone, timedelta
 from urllib.parse import unquote
-import base64
 from nacl import encoding, public
 
 # ================= 配置 =================
@@ -20,7 +20,6 @@ from nacl import encoding, public
 KATA_COOKIES = os.environ.get('KATA_COOKIES', '')
 TG_BOT_TOKEN = os.environ.get('TG_BOT_TOKEN', '')
 TG_CHAT_ID = os.environ.get('TG_CHAT_ID', '')
-DEBUG_MODE = os.environ.get('DEBUG_MODE', 'false').lower() == 'true'
 FORCE_RENEW = os.environ.get('FORCE_RENEW', 'false').lower() == 'true'
 RENEW_THRESHOLD_DAYS = 2
 
@@ -32,7 +31,7 @@ GITHUB_REPOSITORY = os.environ.get('GITHUB_REPOSITORY', '')
 def log(msg, level='INFO'):
     tz = timezone(timedelta(hours=8))
     t = datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')
-    prefix = {'INFO': '📋', 'SUCCESS': '✅', 'WARNING': '⚠️', 'ERROR': '❌', 'DEBUG': '🔍'}
+    prefix = {'INFO': '📋', 'SUCCESS': '✅', 'WARNING': '⚠️', 'ERROR': '❌'}
     print(f'[{t}] {prefix.get(level, "📋")} {msg}')
 
 
@@ -43,40 +42,10 @@ def tg_notify(message):
         requests.post(
             f'https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage',
             json={'chat_id': TG_CHAT_ID, 'text': message, 'parse_mode': 'HTML'},
-            timeout=30, proxies={'http': None, 'https': None}
+            timeout=30
         )
     except:
         pass
-
-
-def tg_send_document(file_path, caption=''):
-    """发送文件到 Telegram"""
-    if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        return False
-    try:
-        with open(file_path, 'rb') as f:
-            resp = requests.post(
-                f'https://api.telegram.org/bot{TG_BOT_TOKEN}/sendDocument',
-                data={'chat_id': TG_CHAT_ID, 'caption': caption},
-                files={'document': f},
-                timeout=60, proxies={'http': None, 'https': None}
-            )
-        return resp.status_code == 200
-    except Exception as e:
-        log(f'发送文件失败: {e}', 'WARNING')
-        return False
-
-
-def tg_send_html(html_content, filename, caption=''):
-    """保存 HTML 并发送到 Telegram"""
-    try:
-        file_path = f'/tmp/{filename}'
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        return tg_send_document(file_path, caption)
-    except Exception as e:
-        log(f'保存/发送 HTML 失败: {e}', 'WARNING')
-        return False
 
 
 def encrypt_secret(public_key: str, secret_value: str) -> str:
@@ -90,7 +59,6 @@ def encrypt_secret(public_key: str, secret_value: str) -> str:
 def update_github_secret(secret_name: str, secret_value: str) -> bool:
     """更新 GitHub Repository Secret"""
     if not REPO_TOKEN or not GITHUB_REPOSITORY:
-        log('未配置 REPO_TOKEN 或 GITHUB_REPOSITORY，跳过更新 Secret', 'WARNING')
         return False
     
     try:
@@ -105,33 +73,28 @@ def update_github_secret(secret_name: str, secret_value: str) -> bool:
         resp = requests.get(key_url, headers=headers, timeout=30)
         
         if resp.status_code != 200:
-            log(f'获取公钥失败: {resp.status_code} {resp.text}', 'ERROR')
+            log(f'获取公钥失败: {resp.status_code}', 'ERROR')
             return False
         
         key_data = resp.json()
         public_key = key_data['key']
         key_id = key_data['key_id']
         
-        # 加密 secret
+        # 加密并更新 secret
         encrypted_value = encrypt_secret(public_key, secret_value)
-        
-        # 更新 secret
         secret_url = f'https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/secrets/{secret_name}'
         resp = requests.put(
             secret_url,
             headers=headers,
-            json={
-                'encrypted_value': encrypted_value,
-                'key_id': key_id
-            },
+            json={'encrypted_value': encrypted_value, 'key_id': key_id},
             timeout=30
         )
         
         if resp.status_code in (201, 204):
-            log(f'成功更新 Secret: {secret_name}', 'SUCCESS')
+            log(f'已更新 Secret: {secret_name}', 'SUCCESS')
             return True
         else:
-            log(f'更新 Secret 失败: {resp.status_code} {resp.text}', 'ERROR')
+            log(f'更新 Secret 失败: {resp.status_code}', 'ERROR')
             return False
             
     except Exception as e:
@@ -166,121 +129,64 @@ def get_csrf(html):
 class KataBumpRenewer:
     def __init__(self):
         self.base_url = 'https://dashboard.katabump.com'
-        self.last_html = ''
-        self.new_cookies = None  # 存储新的 cookies
         
-        # 请求头
         self.headers = {
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'accept-encoding': 'gzip, deflate',
             'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
             'cache-control': 'no-cache',
-            'cookie': KATA_COOKIES,
-            'pragma': 'no-cache',
             'referer': 'https://dashboard.katabump.com/dashboard',
-            'sec-ch-ua': '"Not(A:Brand";v="8", "Chromium";v="144", "Google Chrome";v="144"',
+            'sec-ch-ua': '"Chromium";v="144", "Google Chrome";v="144"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Windows"',
             'sec-fetch-dest': 'document',
             'sec-fetch-mode': 'navigate',
             'sec-fetch-site': 'same-origin',
-            'sec-fetch-user': '?1',
             'upgrade-insecure-requests': '1',
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
         }
         
-        # 使用 Session 来自动处理 cookies
         self.session = requests.Session()
         
-        # 解析初始 cookies 并设置到 session
+        # 解析初始 cookies
         if KATA_COOKIES:
             for item in KATA_COOKIES.split(';'):
                 item = item.strip()
                 if '=' in item:
                     key, value = item.split('=', 1)
                     self.session.cookies.set(key.strip(), value.strip())
-        
-        # 设置代理
-        self.proxies = None
-        proxy = os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY')
-        if proxy:
-            self.proxies = {'http': proxy, 'https': proxy}
-            self.session.proxies = self.proxies
-            log(f'使用代理: {proxy}')
 
     def get_current_cookies(self) -> str:
         """获取当前 session 的 cookies 字符串"""
-        cookies = []
-        for cookie in self.session.cookies:
-            cookies.append(f'{cookie.name}={cookie.value}')
-        return '; '.join(cookies)
+        return '; '.join([f'{c.name}={c.value}' for c in self.session.cookies])
 
     def get(self, path, json_response=False):
         """GET 请求"""
         url = f'{self.base_url}{path}'
-        if DEBUG_MODE:
-            log(f'GET {url}', 'DEBUG')
-        
         headers = self.headers.copy()
-        del headers['cookie']  # 使用 session 管理 cookies
         
         if json_response:
             headers['accept'] = 'application/json, text/plain, */*'
             headers['sec-fetch-dest'] = 'empty'
             headers['sec-fetch-mode'] = 'cors'
         
-        resp = self.session.get(url, headers=headers, timeout=60)
-        
-        if not json_response:
-            self.last_html = resp.text
-        
-        if DEBUG_MODE:
-            log(f'状态: {resp.status_code}', 'DEBUG')
-        return resp
+        return self.session.get(url, headers=headers, timeout=60)
 
     def post(self, path, data):
         """POST 请求"""
         url = f'{self.base_url}{path}'
-        if DEBUG_MODE:
-            log(f'POST {url}', 'DEBUG')
-        
         headers = self.headers.copy()
-        del headers['cookie']  # 使用 session 管理 cookies
         headers['content-type'] = 'application/x-www-form-urlencoded'
         headers['origin'] = self.base_url
         
-        resp = self.session.post(url, data=data, headers=headers, timeout=60)
-        self.last_html = resp.text
-        
-        if DEBUG_MODE:
-            log(f'状态: {resp.status_code}, URL: {resp.url}', 'DEBUG')
-        return resp
-
-    def send_error_page(self, error_msg):
-        """发送错误页面到 Telegram"""
-        if self.last_html:
-            caption = f'❌ KataBump 错误\n\n错误: {error_msg}\n长度: {len(self.last_html)} 字符'
-            tg_send_html(self.last_html, 'katabump_error.html', caption)
+        return self.session.post(url, data=data, headers=headers, timeout=60)
 
     def save_cookies(self):
         """保存更新后的 cookies 到 GitHub Secrets"""
         new_cookies = self.get_current_cookies()
-        
-        if not new_cookies:
-            log('没有 cookies 需要保存', 'WARNING')
-            return
-        
-        # 检查 cookies 是否有变化
-        if new_cookies == KATA_COOKIES:
-            log('Cookies 未变化，无需更新', 'DEBUG' if DEBUG_MODE else 'INFO')
-            return
-        
-        log('检测到 Cookies 变化，尝试更新 Secret...')
-        
-        if update_github_secret('KATA_COOKIES', new_cookies):
-            log('Cookies 已更新到 GitHub Secrets', 'SUCCESS')
-        else:
-            log('Cookies 更新失败', 'WARNING')
+        if new_cookies and new_cookies != KATA_COOKIES:
+            log('检测到 Cookies 变化，更新 Secret...')
+            update_github_secret('KATA_COOKIES', new_cookies)
 
     def get_servers(self):
         """通过 API 获取服务器列表"""
@@ -289,24 +195,18 @@ class KataBumpRenewer:
         # 先访问 dashboard 确保 session 有效
         resp = self.get('/dashboard')
         if '/auth/login' in str(resp.url) or 'name="password"' in resp.text:
-            self.send_error_page('Cookie 已过期')
             raise Exception('Cookie 已过期，请更新 KATA_COOKIES')
         
         # 调用 API 获取服务器列表
         resp = self.get('/api-client/list-servers', json_response=True)
         
-        if DEBUG_MODE:
-            log(f'API 响应: {resp.text[:500]}', 'DEBUG')
-        
         try:
             servers = resp.json()
-        except Exception as e:
-            self.last_html = resp.text
-            self.send_error_page(f'API 返回非 JSON: {e}')
-            raise Exception(f'API 返回非 JSON 数据')
+        except:
+            raise Exception('API 返回非 JSON 数据')
         
         if not isinstance(servers, list):
-            raise Exception(f'API 返回格式错误: {type(servers)}')
+            raise Exception(f'API 返回格式错误')
         
         if not servers:
             log('没有服务器', 'WARNING')
@@ -314,17 +214,14 @@ class KataBumpRenewer:
         
         log(f'找到 {len(servers)} 个服务器', 'SUCCESS')
         
-        # 返回服务器信息
         result = []
         for s in servers:
-            server_info = {
+            info = {
                 'id': s.get('id'),
                 'name': s.get('name', f"Server-{s.get('id')}"),
-                'location': s.get('location', '?'),
-                'type': s.get('type', '?'),
             }
-            log(f"  - {server_info['id']}: {server_info['name']} ({server_info['location']})")
-            result.append(server_info)
+            log(f"  - {info['id']}: {info['name']}")
+            result.append(info)
         
         return result
 
@@ -336,29 +233,17 @@ class KataBumpRenewer:
         log(f'')
         log(f'━━━ {name} (ID: {server_id}) ━━━')
         
-        # 更新 referer
         self.headers['referer'] = f'{self.base_url}/dashboard'
-        
-        # 获取服务器页面
         resp = self.get(f'/servers/edit?id={server_id}')
         html = resp.text
-        
-        if DEBUG_MODE:
-            with open(f'/tmp/server_{server_id}.html', 'w', encoding='utf-8') as f:
-                f.write(html)
         
         if '/auth/login' in str(resp.url):
             return {'id': server_id, 'name': name, 'action': 'error', 'msg': 'Cookie 过期', 'ok': False}
         
-        # 获取到期时间
         expiry = get_expiry(html)
         days = days_until(expiry)
         
         log(f'到期: {expiry or "未知"} | 剩余: {days if days is not None else "?"} 天')
-        
-        # 检查 URL 是否已有续订结果
-        if 'renew=success' in str(resp.url):
-            log('已续订', 'SUCCESS')
         
         # 判断是否需要续订
         if not FORCE_RENEW and days is not None and days > RENEW_THRESHOLD_DAYS:
@@ -369,21 +254,12 @@ class KataBumpRenewer:
         log('执行续订...')
         csrf = get_csrf(html)
         if not csrf:
-            log('无法获取 CSRF token', 'ERROR')
             return {'id': server_id, 'name': name, 'action': 'error', 'msg': '无法获取 CSRF', 'ok': False}
         
-        # 更新 referer
         self.headers['referer'] = f'{self.base_url}/servers/edit?id={server_id}'
-        
         resp = self.post(f'/api-client/renew?id={server_id}', {'csrf': csrf})
-        
-        if DEBUG_MODE:
-            with open(f'/tmp/renew_{server_id}.html', 'w', encoding='utf-8') as f:
-                f.write(resp.text)
-        
         final_url = str(resp.url)
         
-        # 检查结果
         if 'renew=success' in final_url:
             time.sleep(1)
             resp2 = self.get(f'/servers/edit?id={server_id}')
@@ -399,7 +275,6 @@ class KataBumpRenewer:
                 return {'id': server_id, 'name': name, 'expiry': expiry, 'action': 'not_yet', 'msg': msg, 'ok': True}
             return {'id': server_id, 'name': name, 'action': 'failed', 'msg': msg, 'ok': False}
         
-        log('续订结果未知', 'WARNING')
         return {'id': server_id, 'name': name, 'action': 'unknown', 'ok': False}
 
     def run(self):
@@ -410,17 +285,14 @@ class KataBumpRenewer:
         if not KATA_COOKIES:
             raise Exception('未设置 KATA_COOKIES')
         
-        if DEBUG_MODE:
-            log('调试模式', 'DEBUG')
         if FORCE_RENEW:
-            log('强制续订', 'WARNING')
+            log('强制续订模式', 'WARNING')
         
         servers = self.get_servers()
         
         if not servers:
-            log('没有服务器需要处理')
             tg_notify('📋 <b>KataBump</b>\n\n没有服务器')
-            self.save_cookies()  # 保存 cookies
+            self.save_cookies()
             return True
         
         results = []
@@ -429,10 +301,8 @@ class KataBumpRenewer:
                 time.sleep(random.uniform(2, 4))
             results.append(self.process_server(server_info))
         
-        # 保存更新后的 cookies
         self.save_cookies()
         
-        # 汇总
         log('')
         log('=' * 50)
         log('完成')
@@ -472,9 +342,6 @@ def main():
         sys.exit(0 if ok else 1)
     except Exception as e:
         log(f'错误: {e}', 'ERROR')
-        if DEBUG_MODE:
-            import traceback
-            traceback.print_exc()
         tg_notify(f'❌ <b>KataBump 出错</b>\n\n{e}')
         sys.exit(1)
 
