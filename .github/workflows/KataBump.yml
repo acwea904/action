@@ -1,7 +1,7 @@
 name: KataBump 自动续订
+
 on:
   schedule:
-    # 每天 UTC 8:00 (北京时间 16:00) 运行
     - cron: '0 8 * * *'
   workflow_dispatch:
     inputs:
@@ -23,7 +23,7 @@ jobs:
           python-version: '3.11'
 
       - name: 安装依赖
-        run: pip install requests
+        run: pip install requests pynacl
 
       - name: 下载 Hysteria2
         run: |
@@ -64,11 +64,13 @@ jobs:
           echo "✅ 代理已启动"
 
       - name: 运行续订
-       env:
+        env:
           KATA_COOKIES: ${{ secrets.KATA_COOKIES }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           FORCE_RENEW: ${{ github.event.inputs.force_renew || 'false' }}
+          HTTP_PROXY: http://127.0.0.1:8080
+          HTTPS_PROXY: http://127.0.0.1:8080
         run: python scripts/katabump_renew.py
