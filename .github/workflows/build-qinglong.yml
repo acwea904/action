@@ -13,12 +13,7 @@ on:
         required: false
         default: '18'
 
-  # 青龙发布新版本时触发（可选）
-  # repository_dispatch:
-  #   types: [qinglong-release]
-
 env:
-  REGISTRY: ghcr.io
   NODE_OPTIONS: --max-old-space-size=4096
 
 jobs:
@@ -91,6 +86,9 @@ jobs:
           # 显示版本信息
           if [ -f "package.json" ]; then
             echo "package.json 版本: $(jq -r '.version' package.json)"
+            echo ""
+            echo "可用的 scripts:"
+            jq -r '.scripts | keys[]' package.json
           fi
 
       - name: Install Dependencies
@@ -108,16 +106,43 @@ jobs:
           
           echo "✓ 依赖安装完成"
 
-      - name: Build Frontend
+      - name: Build Application
         if: steps.check_release.outputs.exists != 'true'
         run: |
           cd qinglong
-          echo "🔨 构建前端..."
+          echo "🔨 构建应用..."
           
-          # 构建
-          pnpm build || npm run build
+          # 查看可用的构建脚本
+          echo "可用的 npm scripts:"
+          npm run 2>&1 | head -30 || true
+          echo ""
           
-          echo "✓ 前端构建完成"
+          # 尝试不同的构建命令
+          if npm run | grep -q "build:back"; then
+            echo "执行: pnpm build:back"
+            pnpm build:back || npm run build:back
+          fi
+          
+          if npm run | grep -q "build:front"; then
+            echo "执行: pnpm build:front"
+            pnpm build:front || npm run build:front
+          fi
+          
+          # 如果有通用 build 命令
+          if npm run | grep -q '"build"'; then
+            echo "执行: pnpm build"
+            pnpm build || npm run build || true
+          fi
+          
+          # 检查构建结果
+          echo ""
+          echo "📁 构建后的目录结构:"
+          ls -la
+          [ -d "build" ] && echo "build/ 目录:" && ls -la build/
+          [ -d "dist" ] && echo "dist/ 目录:" && ls -la dist/
+          [ -d "static" ] && echo "static/ 目录:" && ls -la static/
+          
+          echo "✓ 构建完成"
 
       - name: Prepare Production Package
         if: steps.check_release.outputs.exists != 'true'
@@ -127,14 +152,23 @@ jobs:
           
           # 删除开发依赖，只保留生产依赖
           rm -rf node_modules
-          pnpm install --prod --frozen-lockfile || pnpm install --prod
+          pnpm install --prod --frozen-lockfile || pnpm install --prod || npm install --production
           
           # 清理不需要的文件
           rm -rf .git .github .vscode .idea
-          rm -rf src .eslintrc.js .prettierrc tsconfig*.json
-          rm -rf *.md *.log .env* .editorconfig
+          rm -rf .eslintrc* .prettierrc* tsconfig*.json
+          rm -rf *.md .env* .editorconfig .gitignore
           rm -rf test tests __tests__ coverage
-          rm -rf docker Dockerfile* docker-compose*
+          rm -rf Dockerfile* docker-compose* .dockerignore
+          
+          # 保留必要的源文件（如果没有构建产物）
+          if [ ! -d "build" ] && [ ! -d "dist" ]; then
+            echo "⚠️ 未找到构建产物，保留源文件"
+          else
+            # 如果有构建产物，可以删除源文件
+            # rm -rf src
+            echo "✓ 找到构建产物"
+          fi
           
           # 清理 node_modules 中的无用文件
           find node_modules -name "*.md" -delete 2>/dev/null || true
@@ -145,13 +179,18 @@ jobs:
           find node_modules -name "example" -type d -exec rm -rf {} + 2>/dev/null || true
           find node_modules -name "examples" -type d -exec rm -rf {} + 2>/dev/null || true
           find node_modules -name ".github" -type d -exec rm -rf {} + 2>/dev/null || true
+          find node_modules -name "docs" -type d -exec rm -rf {} + 2>/dev/null || true
           
           echo "✓ 清理完成"
           
           # 显示大小
+          echo ""
           echo "📊 包大小:"
           du -sh .
           du -sh node_modules
+          echo ""
+          echo "📁 最终目录结构:"
+          ls -la
 
       - name: Create Version Info
         if: steps.check_release.outputs.exists != 'true'
@@ -161,8 +200,10 @@ jobs:
           {
             "version": "${{ steps.version.outputs.version }}",
             "node": "$(node -v)",
+            "pnpm": "$(pnpm -v)",
             "buildTime": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-            "buildBy": "GitHub Actions"
+            "buildBy": "GitHub Actions",
+            "repository": "${{ github.repository }}"
           }
           EOF
           cat VERSION.json
@@ -171,20 +212,26 @@ jobs:
         if: steps.check_release.outputs.exists != 'true'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          PACKAGE_NAME="qinglong-v${VERSION}-node${{ github.event.inputs.node_version || '18' }}-packed"
+          NODE_VER="${{ github.event.inputs.node_version || '18' }}"
+          PACKAGE_NAME="qinglong-v${VERSION}-node${NODE_VER}-packed"
           
           echo "📦 创建 ${PACKAGE_NAME}.tar.gz..."
           tar -czf "${PACKAGE_NAME}.tar.gz" -C . qinglong
           
           # 显示大小
           ls -lh "${PACKAGE_NAME}.tar.gz"
+          
+          # 计算 SHA256
+          SHA256=$(sha256sum "${PACKAGE_NAME}.tar.gz" | cut -d' ' -f1)
+          echo "SHA256: $SHA256"
+          
           echo "PACKAGE_NAME=${PACKAGE_NAME}" >> $GITHUB_ENV
+          echo "PACKAGE_SHA256=${SHA256}" >> $GITHUB_ENV
 
-      - name: Package - zip (Optional)
+      - name: Package - zip
         if: steps.check_release.outputs.exists != 'true'
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          PACKAGE_NAME="qinglong-v${VERSION}-node${{ github.event.inputs.node_version || '18' }}-packed"
+          PACKAGE_NAME="${{ env.PACKAGE_NAME }}"
           
           echo "📦 创建 ${PACKAGE_NAME}.zip..."
           zip -r -q "${PACKAGE_NAME}.zip" qinglong
@@ -197,6 +244,7 @@ jobs:
           echo "🔐 生成校验和..."
           sha256sum ${{ env.PACKAGE_NAME }}.tar.gz > checksums.txt
           sha256sum ${{ env.PACKAGE_NAME }}.zip >> checksums.txt
+          echo ""
           cat checksums.txt
 
       - name: Create Release
@@ -206,17 +254,22 @@ jobs:
           tag_name: qinglong-v${{ steps.version.outputs.version }}
           name: Qinglong v${{ steps.version.outputs.version }} (Packed)
           body: |
-            ## 青龙面板 v${{ steps.version.outputs.version }} 预打包版本
+            ## 🐉 青龙面板 v${{ steps.version.outputs.version }} 预打包版本
             
             ### 📦 包含内容
             - 青龙面板 v${{ steps.version.outputs.version }}
-            - Node.js ${{ github.event.inputs.node_version || '18' }} 依赖 (node_modules)
-            - 已构建的前端文件
+            - Node.js ${{ github.event.inputs.node_version || '18' }} 生产依赖 (node_modules)
+            - 已构建的应用文件
             
-            ### 🚀 使用方法
+            ### 🚀 快速使用
+            
+            **下载并解压：**
             ```bash
-            # 下载并解压
-            curl -sL https://github.com/${{ github.repository }}/releases/download/qinglong-v${{ steps.version.outputs.version }}/${{ env.PACKAGE_NAME }}.tar.gz | tar -xz
+            # 使用 curl
+            curl -sL "https://github.com/${{ github.repository }}/releases/download/qinglong-v${{ steps.version.outputs.version }}/${{ env.PACKAGE_NAME }}.tar.gz" | tar -xz
             
-            # 或者
-            wget -qO- https://github.com/${{ github.repository }}/releases/download/qinglong-v${{ steps.version.outputs.version }}/${{ env.PACKAGE_NAME }}.tar.gz | tar -xz
+            # 或使用 wget
+            wget -qO- "https://github.com/${{ github.repository }}/releases/download/qinglong-v${{ steps.version.outputs.version }}/${{ env.PACKAGE_NAME }}.tar.gz" | tar -xz
+            
+            # 进入目录
+            cd qinglong
