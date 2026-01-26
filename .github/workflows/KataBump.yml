@@ -78,7 +78,6 @@ jobs:
         env:
           KATA_EMAIL: ${{ secrets.KATA_EMAIL }}
           KATA_PASSWORD: ${{ secrets.KATA_PASSWORD }}
-          KATA_SERVER_ID: ${{ secrets.KATA_SERVER_ID }}
           CF_CLEARANCE: ${{ secrets.CF_CLEARANCE }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
