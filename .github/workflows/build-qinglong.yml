@@ -12,8 +12,8 @@ on:
         required: false
         default: '18'
 
-#  schedule:
-#    - cron: '0 0 * * 1'
+ # schedule:
+ #   - cron: '0 0 * * 1'
 
 env:
   NODE_OPTIONS: --max-old-space-size=4096
@@ -40,186 +40,104 @@ jobs:
             fi
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
           echo "📦 构建版本: $VERSION"
 
-      - name: Delete Existing Release
+      - name: Check if Release Exists
+        id: check
         run: |
           RELEASE_TAG="qinglong-v${{ steps.version.outputs.version }}"
-          echo "🗑️ 检查并删除已存在的 Release: $RELEASE_TAG"
-          
-          # 获取 release id
-          RELEASE_ID=$(curl -s \
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${RELEASE_TAG}" \
-            | jq -r '.id')
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${RELEASE_TAG}")
           
-          if [ "$RELEASE_ID" != "null" ] && [ -n "$RELEASE_ID" ]; then
-            echo "删除 Release ID: $RELEASE_ID"
-            curl -s -X DELETE \
-              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${{ github.repository }}/releases/${RELEASE_ID}"
-            
-            # 删除 tag
-            git push origin --delete "$RELEASE_TAG" 2>/dev/null || true
-            echo "✓ 已删除"
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "⚠️ Release $RELEASE_TAG 已存在，跳过构建"
           else
-            echo "✓ 不存在，跳过"
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "✓ 将创建新 Release: $RELEASE_TAG"
           fi
 
       - name: Setup Node.js
+        if: steps.check.outputs.exists == 'false'
         uses: actions/setup-node@v4
         with:
           node-version: ${{ github.event.inputs.node_version || '18' }}
 
       - name: Setup pnpm
+        if: steps.check.outputs.exists == 'false'
         uses: pnpm/action-setup@v2
         with:
           version: 8
 
       - name: Clone Qinglong
+        if: steps.check.outputs.exists == 'false'
         run: |
-          echo "📥 克隆青龙面板 v${{ steps.version.outputs.version }}..."
-          git clone --depth 1 --branch "${{ steps.version.outputs.tag }}" \
+          git clone --depth 1 --branch "v${{ steps.version.outputs.version }}" \
             https://github.com/whyour/qinglong.git qinglong || \
           git clone --depth 1 https://github.com/whyour/qinglong.git qinglong
 
       - name: Install Dependencies
+        if: steps.check.outputs.exists == 'false'
         run: |
           cd qinglong
-          echo "📦 安装依赖..."
           npm config set registry https://registry.npmmirror.com
           pnpm config set registry https://registry.npmmirror.com
           pnpm install
 
-      - name: Build Backend
+      - name: Build
+        if: steps.check.outputs.exists == 'false'
         run: |
           cd qinglong
-          echo "🔨 构建后端..."
           pnpm run build:back || true
-          [ -f "build/app.js" ] && echo "✓ 后端构建成功" || echo "⚠️ 后端未构建"
-
-      - name: Build Frontend
-        run: |
-          cd qinglong
-          echo "🔨 构建前端..."
           pnpm run build:front || true
-          [ -d "static/dist" ] && echo "✓ 前端构建成功" || echo "⚠️ 前端未构建"
 
-      - name: Prepare Production Package
+      - name: Prepare Production
+        if: steps.check.outputs.exists == 'false'
         run: |
           cd qinglong
-          echo "📦 准备生产包..."
-          
-          # 重新安装生产依赖
           rm -rf node_modules
           pnpm install --prod
           
-          # 清理
-          rm -rf .git .github .vscode .idea
-          rm -rf .eslintrc* .prettierrc* .prettierignore
-          rm -rf tsconfig*.json .umirc.ts .umirc.js
-          rm -rf *.md .env* .editorconfig .gitignore .npmrc
-          rm -rf test tests __tests__ coverage
+          # 清理不需要的文件
+          rm -rf .git .github .vscode src back
+          rm -rf tsconfig*.json .umirc.ts *.md
           rm -rf Dockerfile* docker-compose* .dockerignore
-          rm -rf nodemon.json typings.d.ts
-          rm -rf pnpm-lock.yaml package-lock.json yarn.lock
+          rm -rf pnpm-lock.yaml package-lock.json
           
-          [ -f "build/app.js" ] && rm -rf back/
-          [ -d "static/dist" ] && rm -rf src/
-          
-          # 清理 node_modules
-          find node_modules -name "*.md" -type f -delete 2>/dev/null || true
-          find node_modules -type d -name "test" -exec rm -rf {} + 2>/dev/null || true
-          find node_modules -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true
-          find node_modules -type d -name "__tests__" -exec rm -rf {} + 2>/dev/null || true
-          find node_modules -type d -name "example" -exec rm -rf {} + 2>/dev/null || true
-          find node_modules -type d -name "examples" -exec rm -rf {} + 2>/dev/null || true
-          find node_modules -type d -name "docs" -exec rm -rf {} + 2>/dev/null || true
-          
-          echo "✓ 清理完成"
-          echo "📊 大小: $(du -sh . | cut -f1)"
-
-      - name: Create Startup Script
-        run: |
-          cd qinglong
+          # 创建启动脚本
           cat > start.sh << 'EOF'
           #!/bin/bash
           cd "$(dirname "$0")"
           export QlPort=${QlPort:-5700}
-          echo "🐉 启动青龙面板 (端口: $QlPort)"
           exec node build/app.js
           EOF
           chmod +x start.sh
 
-      - name: Create VERSION.json
+      - name: Package
+        if: steps.check.outputs.exists == 'false'
         run: |
-          cd qinglong
-          cat > VERSION.json << EOF
-          {
-            "version": "${{ steps.version.outputs.version }}",
-            "node": "$(node -v)",
-            "buildTime": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-          }
-          EOF
-
-      - name: Package Files
-        id: package
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          NODE_VER="${{ github.event.inputs.node_version || '18' }}"
-          PACKAGE_NAME="qinglong-v${VERSION}-node${NODE_VER}-packed"
-          
-          echo "📦 创建压缩包..."
-          
-          # 创建 tar.gz
-          tar -czf "${PACKAGE_NAME}.tar.gz" qinglong
-          TAR_SIZE=$(ls -lh "${PACKAGE_NAME}.tar.gz" | awk '{print $5}')
-          echo "✓ ${PACKAGE_NAME}.tar.gz ($TAR_SIZE)"
-          
-          # 创建 zip
-          zip -r -q "${PACKAGE_NAME}.zip" qinglong
-          ZIP_SIZE=$(ls -lh "${PACKAGE_NAME}.zip" | awk '{print $5}')
-          echo "✓ ${PACKAGE_NAME}.zip ($ZIP_SIZE)"
-          
-          # 创建校验和
-          sha256sum "${PACKAGE_NAME}.tar.gz" > checksums.txt
-          sha256sum "${PACKAGE_NAME}.zip" >> checksums.txt
-          echo ""
-          echo "🔐 SHA256:"
-          cat checksums.txt
-          
-          # 验证文件存在
-          echo ""
-          echo "📁 打包文件列表:"
-          ls -la *.tar.gz *.zip checksums.txt
-          
-          # 输出变量
-          echo "package_name=${PACKAGE_NAME}" >> $GITHUB_OUTPUT
-          echo "tar_file=${PACKAGE_NAME}.tar.gz" >> $GITHUB_OUTPUT
-          echo "zip_file=${PACKAGE_NAME}.zip" >> $GITHUB_OUTPUT
+          tar -czvf qinglong-${{ steps.version.outputs.version }}.tar.gz qinglong
+          ls -lh qinglong-*.tar.gz
 
       - name: Create Release
+        if: steps.check.outputs.exists == 'false'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: qinglong-v${{ steps.version.outputs.version }}
-          name: 🐉 Qinglong v${{ steps.version.outputs.version }} (Packed)
+          name: Qinglong ${{ steps.version.outputs.version }}
           body: |
-            ## 🐉 青龙面板 v${{ steps.version.outputs.version }} 预打包版本
+            Pre-built Qinglong Panel ${{ steps.version.outputs.version }}
             
-            ### 📦 包含内容
-            - ✅ 青龙面板 v${{ steps.version.outputs.version }}
-            - ✅ Node.js ${{ github.event.inputs.node_version || '18' }} 生产依赖
-            - ✅ 已构建的前后端文件
-            - ✅ 启动脚本
+            ✅ Includes:
+            - Built backend (build/)
+            - Built frontend (static/dist/)
+            - Production node_modules
+            - Startup script (start.sh)
             
-            ### 🚀 快速使用
+            ## Quick Start
             ```bash
-            # 下载解压
-            curl -sL "https://github.com/${{ github.repository }}/releases/download/qinglong-v${{ steps.version.outputs.version }}/${{ steps.package.outputs.tar_file }}" | tar -xz
-            
-            # 启动
+            tar -xzf qinglong-${{ steps.version.outputs.version }}.tar.gz
             cd qinglong
             ./start.sh
-            
-            # 访问: http://localhost:5700
+            # Visit: http://localhost:5700
