@@ -120,15 +120,14 @@ class KataBumpRenewer:
         self.base_url = 'https://dashboard.katabump.com'
         self.last_html = ''
         
-        # 完全模拟浏览器请求头
+        # 请求头 - 只使用 gzip, deflate (不用 br, zstd)
         self.headers = {
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'accept-encoding': 'gzip, deflate, br, zstd',
+            'accept-encoding': 'gzip, deflate',  # 移除 br, zstd
             'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
             'cache-control': 'no-cache',
             'cookie': KATA_COOKIES,
             'pragma': 'no-cache',
-            'priority': 'u=0, i',
             'referer': 'https://dashboard.katabump.com/auth/login',
             'sec-ch-ua': '"Not(A:Brand";v="8", "Chromium";v="144", "Google Chrome";v="144"',
             'sec-ch-ua-mobile': '?0',
@@ -158,7 +157,10 @@ class KataBumpRenewer:
         self.last_html = resp.text
         
         if DEBUG_MODE:
-            log(f'状态: {resp.status_code}', 'DEBUG')
+            log(f'状态: {resp.status_code}, 长度: {len(resp.text)}', 'DEBUG')
+            # 显示前200字符
+            preview = resp.text[:200].replace('\n', ' ')
+            log(f'预览: {preview}...', 'DEBUG')
         return resp
 
     def post(self, path, data):
@@ -192,12 +194,12 @@ class KataBumpRenewer:
         html = resp.text
         
         if DEBUG_MODE:
-            with open('/tmp/dashboard.html', 'w') as f:
+            with open('/tmp/dashboard.html', 'w', encoding='utf-8') as f:
                 f.write(html)
         
         # 分析页面
         page_type = analyze_page(html)
-        log(f'页面类型: {page_type}', 'DEBUG' if DEBUG_MODE else 'INFO')
+        log(f'页面类型: {page_type}')
         
         # 检查登录状态
         if page_type == 'login' or '/auth/login' in str(resp.url):
@@ -240,7 +242,7 @@ class KataBumpRenewer:
         html = resp.text
         
         if DEBUG_MODE:
-            with open(f'/tmp/server_{server_id}.html', 'w') as f:
+            with open(f'/tmp/server_{server_id}.html', 'w', encoding='utf-8') as f:
                 f.write(html)
         
         if '/auth/login' in str(resp.url):
@@ -275,7 +277,7 @@ class KataBumpRenewer:
         resp = self.post(f'/api-client/renew?id={server_id}', {'csrf': csrf})
         
         if DEBUG_MODE:
-            with open(f'/tmp/renew_{server_id}.html', 'w') as f:
+            with open(f'/tmp/renew_{server_id}.html', 'w', encoding='utf-8') as f:
                 f.write(resp.text)
         
         final_url = str(resp.url)
