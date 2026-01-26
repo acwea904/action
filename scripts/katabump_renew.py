@@ -9,6 +9,7 @@ import time
 import requests
 from datetime import datetime, timezone, timedelta
 from urllib.parse import unquote
+from http.cookiejar import CookieJar
 
 KATA_COOKIES = os.environ.get('KATA_COOKIES', '')
 TG_BOT_TOKEN = os.environ.get('TG_BOT_TOKEN', '')
@@ -54,20 +55,15 @@ class KataBumpRenewer:
         self.base = 'https://dashboard.katabump.com'
         self.session = requests.Session()
         
-        # 设置初始 Cookie
-        if KATA_COOKIES:
-            for item in KATA_COOKIES.split(';'):
-                item = item.strip()
-                if '=' in item:
-                    name, value = item.split('=', 1)
-                    self.session.cookies.set(name.strip(), value.strip(), domain='dashboard.katabump.com')
-                    self.session.cookies.set(name.strip(), value.strip(), domain='.katabump.com')
+        # 直接设置 Cookie header，不使用 cookie jar
+        self.cookie_str = KATA_COOKIES
         
         self.session.headers.update({
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
             'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/144.0.0.0 Safari/537.36',
             'upgrade-insecure-requests': '1',
+            'cookie': self.cookie_str,  # 直接设置 Cookie header
         })
         
         proxy = os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY')
@@ -75,118 +71,92 @@ class KataBumpRenewer:
             self.session.proxies = {'http': proxy, 'https': proxy}
             log(f'使用代理: {proxy}')
 
-    def get(self, path, json_resp=False):
+    def request(self, method, path, **kwargs):
         url = f'{self.base}{path}'
-        headers = {'referer': f'{self.base}/dashboard'}
         
+        # 确保每次请求都带上原始 Cookie
+        headers = kwargs.pop('headers', {})
+        headers['cookie'] = self.cookie_str
+        headers['referer'] = f'{self.base}/dashboard'
+        
+        # 禁用自动重定向
+        resp = self.session.request(method, url, headers=headers, timeout=60, allow_redirects=False, **kwargs)
+        
+        # 手动处理重定向（最多10次）
+        visited = set()
+        for i in range(10):
+            if resp.status_code not in (301, 302, 303, 307, 308):
+                break
+            
+            location = resp.headers.get('Location', '')
+            if not location:
+                break
+            
+            # 防止无限循环
+            if location in visited:
+                log(f'检测到重定向循环: {location}', 'WARNING')
+                break
+            visited.add(location)
+            
+            if not location.startswith('http'):
+                location = f'{self.base}{location}'
+            
+            log(f'  重定向 {i+1}: {location}')
+            
+            # 检查是否重定向到登录页
+            if '/auth/login' in location:
+                log('被重定向到登录页，Cookie 已过期', 'ERROR')
+                raise Exception('Cookie 已过期')
+            
+            # 重定向请求也要带上 Cookie
+            resp = self.session.get(location, headers={'cookie': self.cookie_str}, timeout=60, allow_redirects=False)
+        
+        log(f'{method} {path} -> {resp.status_code} (len={len(resp.text)})')
+        return resp
+
+    def get(self, path, json_resp=False):
+        headers = {}
         if json_resp:
             headers['accept'] = 'application/json, text/plain, */*'
             headers['x-requested-with'] = 'XMLHttpRequest'
-        
-        resp = self.session.get(url, headers=headers, timeout=60, allow_redirects=False)
-        
-        # 手动处理重定向（最多5次）
-        redirects = []
-        for i in range(5):
-            if resp.status_code not in (301, 302, 303, 307, 308):
-                break
-            
-            location = resp.headers.get('Location', '')
-            if not location:
-                break
-            
-            redirects.append(f'{resp.status_code} -> {location}')
-            
-            if not location.startswith('http'):
-                location = f'{self.base}{location}'
-            
-            resp = self.session.get(location, headers=headers, timeout=60, allow_redirects=False)
-        
-        log(f'GET {path} -> {resp.status_code} (len={len(resp.text)})')
-        if redirects:
-            for r in redirects:
-                log(f'  重定向: {r}')
-        
-        return resp
+        return self.request('GET', path, headers=headers)
 
     def post(self, path, data):
-        url = f'{self.base}{path}'
         headers = {
             'content-type': 'application/x-www-form-urlencoded',
             'origin': self.base,
-            'referer': f'{self.base}/dashboard',
         }
-        
-        resp = self.session.post(url, data=data, headers=headers, timeout=60, allow_redirects=False)
-        
-        redirects = []
-        final_location = ''
-        for i in range(5):
-            if resp.status_code not in (301, 302, 303, 307, 308):
-                break
-            
-            location = resp.headers.get('Location', '')
-            if not location:
-                break
-            
-            final_location = location
-            redirects.append(f'{resp.status_code} -> {location}')
-            
-            if not location.startswith('http'):
-                location = f'{self.base}{location}'
-            
-            resp = self.session.get(location, timeout=60, allow_redirects=False)
-        
-        log(f'POST {path} -> {resp.status_code}')
-        if redirects:
-            for r in redirects:
-                log(f'  重定向: {r}')
-        
-        # 保存最终重定向位置
-        resp.final_location = final_location
-        return resp
+        return self.request('POST', path, headers=headers, data=data)
 
     def get_servers(self):
         log('获取服务器列表...')
-        log('=' * 50)
         
         # 访问 dashboard
         resp = self.get('/dashboard')
-        
-        log('=' * 50)
-        log(f'响应状态: {resp.status_code}')
-        log(f'响应头:')
-        for k, v in resp.headers.items():
-            log(f'  {k}: {v[:100]}')
-        
-        log('=' * 50)
-        log('页面内容 (前 2000 字符):')
-        print(resp.text[:2000])
-        log('=' * 50)
-        
-        # 检查登录状态
-        if resp.status_code == 302:
-            location = resp.headers.get('Location', '')
-            if '/auth/login' in location:
-                raise Exception(f'Cookie 已过期 (重定向到: {location})')
-        
         html = resp.text
         
         # 检查是否是 Cloudflare 验证页面
         if 'Just a moment' in html or 'cf-browser-verification' in html:
-            raise Exception('遇到 Cloudflare 验证页面，需要更新 Cookie')
+            raise Exception('遇到 Cloudflare 验证页面')
         
         # 检查是否是登录页面
         if 'name="password"' in html and 'name="email"' in html:
             raise Exception('Cookie 已过期 (显示登录表单)')
         
-        log('登录状态检查通过', 'SUCCESS')
+        # 检查是否有 dashboard 内容
+        if 'Your servers' not in html and 'Dashboard' not in html and len(html) < 100:
+            log(f'页面内容异常: {html[:500]}', 'WARNING')
+            raise Exception('Cookie 已过期或页面异常')
+        
+        log('登录状态正常', 'SUCCESS')
         
         # 调用 API
-        log('调用 API...')
         resp = self.get('/api-client/list-servers', json_resp=True)
         
-        log(f'API 响应: {resp.text[:500]}')
+        if not resp.text:
+            raise Exception('API 返回空响应')
+        
+        log(f'API 响应: {resp.text[:200]}')
         
         try:
             servers = resp.json()
@@ -218,16 +188,18 @@ class KataBumpRenewer:
         # 获取 CSRF
         m = re.search(r'name="csrf"[^>]*value="([^"]+)"', html) or re.search(r'value="([^"]+)"[^>]*name="csrf"', html)
         if not m:
-            log(f'  页面内容: {html[:500]}')
+            log(f'  未找到 CSRF，页面: {html[:300]}', 'WARNING')
             return {'name': name, 'action': 'error', 'msg': '无CSRF', 'ok': False}
         csrf = m.group(1)
         
         log(f'  执行续订...')
         resp = self.post(f'/api-client/renew?id={sid}', {'csrf': csrf})
         
-        final_loc = getattr(resp, 'final_location', '')
+        # 检查结果
+        location = resp.headers.get('Location', '')
+        text = resp.text
         
-        if 'renew=success' in final_loc or 'renew=success' in resp.text:
+        if 'renew=success' in location or 'renew=success' in text:
             time.sleep(1)
             resp2 = self.get(f'/servers/edit?id={sid}')
             m2 = re.search(r'(\d{4}-\d{2}-\d{2})', resp2.text)
@@ -235,7 +207,7 @@ class KataBumpRenewer:
             log(f'  续订成功！新到期: {new_expiry}', 'SUCCESS')
             return {'name': name, 'old': expiry, 'new': new_expiry, 'action': 'renewed', 'ok': True}
         
-        error_match = re.search(r'renew-error=([^&"]+)', final_loc + resp.text)
+        error_match = re.search(r'renew-error=([^&"]+)', location + text)
         if error_match:
             msg = unquote(error_match.group(1).replace('+', ' '))
             log(f'  {msg}', 'WARNING')
@@ -243,7 +215,7 @@ class KataBumpRenewer:
                 return {'name': name, 'expiry': expiry, 'action': 'not_yet', 'msg': msg, 'ok': True}
             return {'name': name, 'action': 'failed', 'msg': msg, 'ok': False}
         
-        log(f'  未知响应: {resp.text[:300]}')
+        log(f'  未知响应: location={location}, text={text[:200]}')
         return {'name': name, 'action': 'unknown', 'ok': False}
 
     def run(self):
@@ -253,7 +225,9 @@ class KataBumpRenewer:
         if not KATA_COOKIES:
             raise Exception('未设置 KATA_COOKIES')
         
-        log(f'Cookie 长度: {len(KATA_COOKIES)}')
+        # 显示 Cookie 信息（隐藏值）
+        cookies = [c.split('=')[0] for c in KATA_COOKIES.split(';') if '=' in c]
+        log(f'Cookie 名称: {", ".join(cookies)}')
         
         if FORCE_RENEW:
             log('强制续订模式', 'WARNING')
