@@ -1,18 +1,15 @@
 name: KataBump 自动续订
-
 on:
+  schedule:
+    # 每天 UTC 8:00 (北京时间 16:00) 运行
+    - cron: '0 8 * * *'
   workflow_dispatch:
     inputs:
       force_renew:
-        description: '强制续订'
+        description: '强制续订（忽略到期时间检查）'
         required: false
         default: 'false'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
-  schedule:
-    - cron: '17 9,21 * * *'
+        type: boolean
 
 jobs:
   renew:
