@@ -43,6 +43,36 @@ def tg_notify(message):
         pass
 
 
+def tg_send_document(file_path, caption=''):
+    """发送文件到 Telegram"""
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        return False
+    try:
+        with open(file_path, 'rb') as f:
+            resp = requests.post(
+                f'https://api.telegram.org/bot{TG_BOT_TOKEN}/sendDocument',
+                data={'chat_id': TG_CHAT_ID, 'caption': caption},
+                files={'document': f},
+                timeout=60, proxies={'http': None, 'https': None}
+            )
+        return resp.status_code == 200
+    except Exception as e:
+        log(f'发送文件失败: {e}', 'WARNING')
+        return False
+
+
+def tg_send_html(html_content, filename, caption=''):
+    """保存 HTML 并发送到 Telegram"""
+    try:
+        file_path = f'/tmp/{filename}'
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        return tg_send_document(file_path, caption)
+    except Exception as e:
+        log(f'保存/发送 HTML 失败: {e}', 'WARNING')
+        return False
+
+
 def days_until(date_str):
     if not date_str:
         return None
@@ -72,9 +102,23 @@ def get_server_name(html):
     return m.group(1).strip() if m else None
 
 
+def analyze_page(html):
+    """分析页面内容，返回页面类型"""
+    if 'Just a moment' in html or 'challenge-platform' in html:
+        return 'cloudflare'
+    if 'name="password"' in html and 'name="email"' in html:
+        return 'login'
+    if 'servers/edit?id=' in html:
+        return 'dashboard'
+    if 'Expiry' in html:
+        return 'server_page'
+    return 'unknown'
+
+
 class KataBumpRenewer:
     def __init__(self):
         self.base_url = 'https://dashboard.katabump.com'
+        self.last_html = ''
         
         # 完全模拟浏览器请求头
         self.headers = {
@@ -111,6 +155,7 @@ class KataBumpRenewer:
             log(f'GET {url}', 'DEBUG')
         
         resp = requests.get(url, headers=self.headers, proxies=self.proxies, timeout=60)
+        self.last_html = resp.text
         
         if DEBUG_MODE:
             log(f'状态: {resp.status_code}', 'DEBUG')
@@ -127,33 +172,57 @@ class KataBumpRenewer:
         headers['origin'] = self.base_url
         
         resp = requests.post(url, data=data, headers=headers, proxies=self.proxies, timeout=60)
+        self.last_html = resp.text
         
         if DEBUG_MODE:
             log(f'状态: {resp.status_code}, URL: {resp.url}', 'DEBUG')
         return resp
 
+    def send_error_page(self, error_msg):
+        """发送错误页面到 Telegram"""
+        if self.last_html:
+            page_type = analyze_page(self.last_html)
+            caption = f'❌ KataBump 错误\n\n错误: {error_msg}\n页面类型: {page_type}\n长度: {len(self.last_html)} 字符'
+            tg_send_html(self.last_html, 'katabump_error.html', caption)
+
     def get_servers(self):
         """获取服务器列表"""
         log('获取 Dashboard...')
         resp = self.get('/dashboard')
+        html = resp.text
         
         if DEBUG_MODE:
             with open('/tmp/dashboard.html', 'w') as f:
-                f.write(resp.text)
+                f.write(html)
+        
+        # 分析页面
+        page_type = analyze_page(html)
+        log(f'页面类型: {page_type}', 'DEBUG' if DEBUG_MODE else 'INFO')
         
         # 检查登录状态
-        if '/auth/login' in str(resp.url) or 'name="password"' in resp.text:
+        if page_type == 'login' or '/auth/login' in str(resp.url):
+            self.send_error_page('Cookie 已过期')
             raise Exception('Cookie 已过期，请更新 KATA_COOKIES')
         
-        if 'Just a moment' in resp.text:
+        if page_type == 'cloudflare':
+            self.send_error_page('Cloudflare 挑战')
             raise Exception('遇到 Cloudflare 挑战，请更新 Cookie')
         
         # 解析服务器 ID
-        ids = re.findall(r'servers/edit\?id=(\d+)', resp.text)
+        ids = re.findall(r'servers/edit\?id=(\d+)', html)
         servers = list(dict.fromkeys(ids))  # 去重保持顺序
         
         if not servers:
-            raise Exception('未找到服务器')
+            # 发送页面到 Telegram 以便调试
+            self.send_error_page('未找到服务器')
+            
+            # 尝试提取更多信息
+            title_match = re.search(r'<title>([^<]+)</title>', html)
+            title = title_match.group(1) if title_match else '无标题'
+            log(f'页面标题: {title}', 'WARNING')
+            log(f'页面长度: {len(html)} 字符', 'WARNING')
+            
+            raise Exception(f'未找到服务器 (页面类型: {page_type}, 标题: {title})')
         
         log(f'找到 {len(servers)} 个服务器: {servers}', 'SUCCESS')
         return servers
