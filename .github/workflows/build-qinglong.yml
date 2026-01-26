@@ -13,7 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      packages: write
 
     steps:
       - name: Checkout
@@ -26,73 +25,50 @@ jobs:
             VERSION="${{ github.event.inputs.version }}"
           else
             VERSION=$(curl -sL "https://api.github.com/repos/whyour/qinglong/releases/latest" | jq -r '.tag_name' | sed 's/^v//')
-            [ -z "$VERSION" ] && VERSION="2.17.12"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
-          echo "📦 构建版本: $VERSION"
+          echo "📦 版本: $VERSION"
 
-      - name: Check Release Exists
-        id: check_release
+      - name: Check Release
+        id: check
         run: |
-          RELEASE_TAG="qinglong-v${{ steps.version.outputs.version }}"
-          if gh release view "$RELEASE_TAG" &>/dev/null; then
+          if gh release view "qinglong-v${{ steps.version.outputs.version }}" &>/dev/null; then
             echo "exists=true" >> $GITHUB_OUTPUT
             echo "⚠️ Release 已存在"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
-            echo "✓ 将创建新 Release"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
-        if: steps.check_release.outputs.exists != 'true'
+        if: steps.check.outputs.exists != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 18
 
       - name: Setup pnpm
-        if: steps.check_release.outputs.exists != 'true'
+        if: steps.check.outputs.exists != 'true'
         uses: pnpm/action-setup@v2
         with:
           version: 8
 
-      - name: Clone Qinglong
-        if: steps.check_release.outputs.exists != 'true'
+      - name: Clone and Build
+        if: steps.check.outputs.exists != 'true'
         run: |
-          echo "📥 克隆青龙面板..."
-          git clone --depth 1 --branch "${{ steps.version.outputs.tag }}" \
-            https://github.com/whyour/qinglong.git qinglong || \
-          git clone --depth 1 https://github.com/whyour/qinglong.git qinglong
-
-      - name: Build
-        if: steps.check_release.outputs.exists != 'true'
-        run: |
+          git clone --depth 1 --branch "v${{ steps.version.outputs.version }}" \
+            https://github.com/whyour/qinglong.git qinglong
+          
           cd qinglong
-          
-          echo "📦 安装依赖..."
           pnpm install
-          
-          echo "🔨 构建后端..."
           pnpm run build:back
-          
-          echo "🔨 构建前端..."
           pnpm run build:front
           
-          echo "🧹 清理并重装生产依赖..."
           rm -rf node_modules
           pnpm install --prod
           
-          echo "🗑️ 删除源文件..."
-          rm -rf .git .github .vscode src/ back/
-          rm -rf *.md .env* .gitignore .npmrc
-          rm -rf pnpm-lock.yaml
-
-      - name: Create Startup Script
-        if: steps.check_release.outputs.exists != 'true'
-        run: |
-          cd qinglong
+          rm -rf .git .github src/ back/ *.md
+          
           cat > start.sh << 'EOF'
           #!/bin/bash
           cd "$(dirname "$0")"
@@ -101,64 +77,39 @@ jobs:
           exec node build/app.js
           EOF
           chmod +x start.sh
-          
-          cat > VERSION.json << EOF
-          {
-            "version": "${{ steps.version.outputs.version }}",
-            "node": "18",
-            "buildTime": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-          }
-          EOF
 
       - name: Package
-        if: steps.check_release.outputs.exists != 'true'
+        if: steps.check.outputs.exists != 'true'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          PACKAGE_NAME="qinglong-v${VERSION}-node18-packed"
+          NAME="qinglong-v${VERSION}-node18-packed"
           
-          echo "📦 打包 ${PACKAGE_NAME}..."
+          tar -czf "${NAME}.tar.gz" qinglong
+          zip -r -q "${NAME}.zip" qinglong
+          sha256sum ${NAME}.* > checksums.txt
           
-          # 打包
-          tar -czf "${PACKAGE_NAME}.tar.gz" qinglong
-          zip -r -q "${PACKAGE_NAME}.zip" qinglong
-          
-          # 校验和
-          sha256sum "${PACKAGE_NAME}.tar.gz" > checksums.txt
-          sha256sum "${PACKAGE_NAME}.zip" >> checksums.txt
-          
-          # 显示结果
-          echo ""
-          echo "✅ 打包完成:"
-          ls -lh "${PACKAGE_NAME}"* checksums.txt
-          echo ""
-          echo "🔐 SHA256:"
-          cat checksums.txt
+          ls -lh ${NAME}.*
 
-      - name: Create Release
-        if: steps.check_release.outputs.exists != 'true'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: qinglong-v${{ steps.version.outputs.version }}
-          name: 🐉 Qinglong v${{ steps.version.outputs.version }} (Packed)
-          body: |
-            ## 🐉 青龙面板 v${{ steps.version.outputs.version }} 预打包版本
-            
-            ### 📦 包含内容
-            - ✅ 青龙面板 v${{ steps.version.outputs.version }}
-            - ✅ Node.js 18 生产依赖
-            - ✅ 已构建的前后端文件
-            - ✅ 启动脚本
-            
-            ### 🚀 快速使用
-            
-            ```bash
-            # 下载解压
-            curl -sL "https://github.com/${{ github.repository }}/releases/download/qinglong-v${{ steps.version.outputs.version }}/qinglong-v${{ steps.version.outputs.version }}-node18-packed.tar.gz" | tar -xz
-            
-            # 启动
-            cd qinglong
-            ./start.sh
-            
-            # 访问: http://localhost:5700
-            
-            # 访问: http://localhost:5700
+      - name: Upload Release
+        if: steps.check.outputs.exists != 'true'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="qinglong-v${VERSION}"
+          NAME="qinglong-v${VERSION}-node18-packed"
+          
+          gh release create "$TAG" \
+            --title "🐉 Qinglong v${VERSION} (Packed)" \
+            --notes "## 青龙面板 v${VERSION} 预打包版
+
+          ### 快速使用
+          \`\`\`bash
+          curl -sL https://github.com/${{ github.repository }}/releases/download/${TAG}/${NAME}.tar.gz | tar -xz
+          cd qinglong && ./start.sh
+          \`\`\`
+          
+          访问: http://localhost:5700" \
+            "${NAME}.tar.gz" \
+            "${NAME}.zip" \
+            "checksums.txt"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
