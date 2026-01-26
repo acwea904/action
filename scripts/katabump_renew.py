@@ -52,46 +52,108 @@ def days_until(date_str):
 class KataBumpRenewer:
     def __init__(self):
         self.base = 'https://dashboard.katabump.com'
-        self.headers = {
+        
+        # 使用 Session 来自动管理 Cookie
+        self.session = requests.Session()
+        
+        # 设置初始 Cookie
+        if KATA_COOKIES:
+            for item in KATA_COOKIES.split(';'):
+                item = item.strip()
+                if '=' in item:
+                    name, value = item.split('=', 1)
+                    self.session.cookies.set(name.strip(), value.strip(), domain='dashboard.katabump.com')
+        
+        # 设置请求头
+        self.session.headers.update({
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'accept-encoding': 'gzip, deflate',
             'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'cookie': KATA_COOKIES,
             'referer': 'https://dashboard.katabump.com/dashboard',
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/144.0.0.0 Safari/537.36',
-        }
+            'sec-ch-ua': '"Not(A:Brand";v="8", "Chromium";v="144", "Google Chrome";v="144"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'document',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-site': 'same-origin',
+            'sec-fetch-user': '?1',
+            'upgrade-insecure-requests': '1',
+        })
+        
+        # 设置代理
         proxy = os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY')
-        self.proxies = {'http': proxy, 'https': proxy} if proxy else None
         if proxy:
+            self.session.proxies = {'http': proxy, 'https': proxy}
             log(f'使用代理: {proxy}')
 
     def get(self, path, json_resp=False):
-        headers = self.headers.copy()
+        headers = {}
         if json_resp:
             headers['accept'] = 'application/json'
-        resp = requests.get(f'{self.base}{path}', headers=headers, proxies=self.proxies, timeout=60)
+            headers['sec-fetch-dest'] = 'empty'
+            headers['sec-fetch-mode'] = 'cors'
+        
+        resp = self.session.get(f'{self.base}{path}', headers=headers, timeout=60)
+        
         if DEBUG_MODE:
             log(f'GET {path} -> {resp.status_code}', 'DEBUG')
+            # 显示当前 Cookie
+            cookies = '; '.join([f'{c.name}={c.value[:20]}...' for c in self.session.cookies])
+            log(f'Cookies: {cookies[:100]}...', 'DEBUG')
+        
         return resp
 
     def post(self, path, data):
-        headers = self.headers.copy()
-        headers['content-type'] = 'application/x-www-form-urlencoded'
-        headers['origin'] = self.base
-        resp = requests.post(f'{self.base}{path}', data=data, headers=headers, proxies=self.proxies, timeout=60)
+        headers = {
+            'content-type': 'application/x-www-form-urlencoded',
+            'origin': self.base,
+        }
+        resp = self.session.post(f'{self.base}{path}', data=data, headers=headers, timeout=60)
         if DEBUG_MODE:
             log(f'POST {path} -> {resp.status_code}', 'DEBUG')
         return resp
 
+    def check_login(self, html, url):
+        """检查是否已登录"""
+        # 检查是否被重定向到登录页
+        if '/auth/login' in str(url):
+            return False
+        # 检查页面是否包含登录表单
+        if 'name="password"' in html and 'name="email"' in html:
+            return False
+        # 检查是否有用户信息（说明已登录）
+        if 'dropdown-toggle' in html and 'Logout' in html:
+            return True
+        # 检查是否有 dashboard 内容
+        if 'Your servers' in html or 'api-client/list-servers' in html:
+            return True
+        return True  # 默认认为已登录
+
     def get_servers(self):
-        # 先访问 dashboard 确保登录
-        resp = self.get('/dashboard')
-        if '/auth/login' in str(resp.url) or 'name="password"' in resp.text:
-            raise Exception('Cookie 已过期')
+        log('获取服务器列表...')
         
-        # 调用 API
+        # 访问 dashboard
+        resp = self.get('/dashboard')
+        
+        if not self.check_login(resp.text, resp.url):
+            log('登录检查失败，页面内容:', 'DEBUG')
+            if DEBUG_MODE:
+                log(resp.text[:500], 'DEBUG')
+            raise Exception('Cookie 已过期，请更新 KATA_COOKIES')
+        
+        log('登录状态正常', 'SUCCESS')
+        
+        # 调用 API 获取服务器列表
         resp = self.get('/api-client/list-servers', json_resp=True)
-        servers = resp.json()
+        
+        if DEBUG_MODE:
+            log(f'API 响应: {resp.text[:200]}', 'DEBUG')
+        
+        try:
+            servers = resp.json()
+        except:
+            raise Exception(f'API 返回非 JSON: {resp.text[:100]}')
         
         if not servers:
             return []
@@ -102,10 +164,11 @@ class KataBumpRenewer:
         log(f'处理: {name} (ID: {sid})')
         
         # 获取服务器页面
+        self.session.headers['referer'] = f'{self.base}/dashboard'
         resp = self.get(f'/servers/edit?id={sid}')
         html = resp.text
         
-        if '/auth/login' in str(resp.url):
+        if not self.check_login(html, resp.url):
             return {'name': name, 'action': 'error', 'msg': 'Cookie过期', 'ok': False}
         
         # 获取到期时间
@@ -123,12 +186,18 @@ class KataBumpRenewer:
         # 获取 CSRF
         m = re.search(r'name="csrf"[^>]*value="([^"]+)"', html) or re.search(r'value="([^"]+)"[^>]*name="csrf"', html)
         if not m:
+            log('  未找到 CSRF token', 'ERROR')
+            if DEBUG_MODE:
+                # 保存页面以便调试
+                with open('/tmp/server_page.html', 'w') as f:
+                    f.write(html)
+                log('  页面已保存到 /tmp/server_page.html', 'DEBUG')
             return {'name': name, 'action': 'error', 'msg': '无CSRF', 'ok': False}
         csrf = m.group(1)
         
         # 执行续订
         log(f'  执行续订...')
-        self.headers['referer'] = f'{self.base}/servers/edit?id={sid}'
+        self.session.headers['referer'] = f'{self.base}/servers/edit?id={sid}'
         resp = self.post(f'/api-client/renew?id={sid}', {'csrf': csrf})
         url = str(resp.url)
         
@@ -153,9 +222,13 @@ class KataBumpRenewer:
 
     def run(self):
         log('KataBump 自动续订')
+        log('=' * 40)
         
         if not KATA_COOKIES:
             raise Exception('未设置 KATA_COOKIES')
+        
+        if FORCE_RENEW:
+            log('强制续订模式', 'WARNING')
         
         servers = self.get_servers()
         log(f'找到 {len(servers)} 个服务器')
@@ -168,7 +241,9 @@ class KataBumpRenewer:
         for s in servers:
             results.append(self.process_server(s['id'], s['name']))
         
-        # 汇总通知
+        # 汇总
+        log('=' * 40)
+        
         renewed = [r for r in results if r['action'] == 'renewed']
         skipped = [r for r in results if r['action'] == 'skip']
         not_yet = [r for r in results if r['action'] == 'not_yet']
@@ -199,6 +274,9 @@ def main():
         sys.exit(0 if ok else 1)
     except Exception as e:
         log(f'错误: {e}', 'ERROR')
+        if DEBUG_MODE:
+            import traceback
+            traceback.print_exc()
         tg_notify(f'❌ KataBump 出错: {e}')
         sys.exit(1)
 
