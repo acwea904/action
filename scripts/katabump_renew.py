@@ -102,33 +102,20 @@ def get_server_name(html):
     return m.group(1).strip() if m else None
 
 
-def analyze_page(html):
-    """分析页面内容，返回页面类型"""
-    if 'Just a moment' in html or 'challenge-platform' in html:
-        return 'cloudflare'
-    if 'name="password"' in html and 'name="email"' in html:
-        return 'login'
-    if 'servers/edit?id=' in html:
-        return 'dashboard'
-    if 'Expiry' in html:
-        return 'server_page'
-    return 'unknown'
-
-
 class KataBumpRenewer:
     def __init__(self):
         self.base_url = 'https://dashboard.katabump.com'
         self.last_html = ''
         
-        # 请求头 - 只使用 gzip, deflate (不用 br, zstd)
+        # 请求头
         self.headers = {
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'accept-encoding': 'gzip, deflate',  # 移除 br, zstd
+            'accept-encoding': 'gzip, deflate',
             'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
             'cache-control': 'no-cache',
             'cookie': KATA_COOKIES,
             'pragma': 'no-cache',
-            'referer': 'https://dashboard.katabump.com/auth/login',
+            'referer': 'https://dashboard.katabump.com/dashboard',
             'sec-ch-ua': '"Not(A:Brand";v="8", "Chromium";v="144", "Google Chrome";v="144"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Windows"',
@@ -147,20 +134,25 @@ class KataBumpRenewer:
             self.proxies = {'http': proxy, 'https': proxy}
             log(f'使用代理: {proxy}')
 
-    def get(self, path):
+    def get(self, path, json_response=False):
         """GET 请求"""
         url = f'{self.base_url}{path}'
         if DEBUG_MODE:
             log(f'GET {url}', 'DEBUG')
         
-        resp = requests.get(url, headers=self.headers, proxies=self.proxies, timeout=60)
-        self.last_html = resp.text
+        headers = self.headers.copy()
+        if json_response:
+            headers['accept'] = 'application/json, text/plain, */*'
+            headers['sec-fetch-dest'] = 'empty'
+            headers['sec-fetch-mode'] = 'cors'
+        
+        resp = requests.get(url, headers=headers, proxies=self.proxies, timeout=60)
+        
+        if not json_response:
+            self.last_html = resp.text
         
         if DEBUG_MODE:
-            log(f'状态: {resp.status_code}, 长度: {len(resp.text)}', 'DEBUG')
-            # 显示前200字符
-            preview = resp.text[:200].replace('\n', ' ')
-            log(f'预览: {preview}...', 'DEBUG')
+            log(f'状态: {resp.status_code}', 'DEBUG')
         return resp
 
     def post(self, path, data):
@@ -183,56 +175,62 @@ class KataBumpRenewer:
     def send_error_page(self, error_msg):
         """发送错误页面到 Telegram"""
         if self.last_html:
-            page_type = analyze_page(self.last_html)
-            caption = f'❌ KataBump 错误\n\n错误: {error_msg}\n页面类型: {page_type}\n长度: {len(self.last_html)} 字符'
+            caption = f'❌ KataBump 错误\n\n错误: {error_msg}\n长度: {len(self.last_html)} 字符'
             tg_send_html(self.last_html, 'katabump_error.html', caption)
 
     def get_servers(self):
-        """获取服务器列表"""
-        log('获取 Dashboard...')
+        """通过 API 获取服务器列表"""
+        log('获取服务器列表...')
+        
+        # 先访问 dashboard 确保 session 有效
         resp = self.get('/dashboard')
-        html = resp.text
-        
-        if DEBUG_MODE:
-            with open('/tmp/dashboard.html', 'w', encoding='utf-8') as f:
-                f.write(html)
-        
-        # 分析页面
-        page_type = analyze_page(html)
-        log(f'页面类型: {page_type}')
-        
-        # 检查登录状态
-        if page_type == 'login' or '/auth/login' in str(resp.url):
+        if '/auth/login' in str(resp.url) or 'name="password"' in resp.text:
             self.send_error_page('Cookie 已过期')
             raise Exception('Cookie 已过期，请更新 KATA_COOKIES')
         
-        if page_type == 'cloudflare':
-            self.send_error_page('Cloudflare 挑战')
-            raise Exception('遇到 Cloudflare 挑战，请更新 Cookie')
+        # 调用 API 获取服务器列表
+        resp = self.get('/api-client/list-servers', json_response=True)
         
-        # 解析服务器 ID
-        ids = re.findall(r'servers/edit\?id=(\d+)', html)
-        servers = list(dict.fromkeys(ids))  # 去重保持顺序
+        if DEBUG_MODE:
+            log(f'API 响应: {resp.text[:500]}', 'DEBUG')
+        
+        try:
+            servers = resp.json()
+        except Exception as e:
+            self.last_html = resp.text
+            self.send_error_page(f'API 返回非 JSON: {e}')
+            raise Exception(f'API 返回非 JSON 数据')
+        
+        if not isinstance(servers, list):
+            raise Exception(f'API 返回格式错误: {type(servers)}')
         
         if not servers:
-            # 发送页面到 Telegram 以便调试
-            self.send_error_page('未找到服务器')
-            
-            # 尝试提取更多信息
-            title_match = re.search(r'<title>([^<]+)</title>', html)
-            title = title_match.group(1) if title_match else '无标题'
-            log(f'页面标题: {title}', 'WARNING')
-            log(f'页面长度: {len(html)} 字符', 'WARNING')
-            
-            raise Exception(f'未找到服务器 (页面类型: {page_type}, 标题: {title})')
+            log('没有服务器', 'WARNING')
+            return []
         
-        log(f'找到 {len(servers)} 个服务器: {servers}', 'SUCCESS')
-        return servers
+        log(f'找到 {len(servers)} 个服务器', 'SUCCESS')
+        
+        # 返回服务器信息
+        result = []
+        for s in servers:
+            server_info = {
+                'id': s.get('id'),
+                'name': s.get('name', f"Server-{s.get('id')}"),
+                'location': s.get('location', '?'),
+                'type': s.get('type', '?'),
+            }
+            log(f"  - {server_info['id']}: {server_info['name']} ({server_info['location']})")
+            result.append(server_info)
+        
+        return result
 
-    def process_server(self, server_id):
+    def process_server(self, server_info):
         """处理单个服务器"""
+        server_id = server_info['id']
+        name = server_info['name']
+        
         log(f'')
-        log(f'━━━ 服务器 {server_id} ━━━')
+        log(f'━━━ {name} (ID: {server_id}) ━━━')
         
         # 更新 referer
         self.headers['referer'] = f'{self.base_url}/dashboard'
@@ -246,14 +244,12 @@ class KataBumpRenewer:
                 f.write(html)
         
         if '/auth/login' in str(resp.url):
-            return {'id': server_id, 'action': 'error', 'msg': 'Cookie 过期', 'ok': False}
+            return {'id': server_id, 'name': name, 'action': 'error', 'msg': 'Cookie 过期', 'ok': False}
         
-        # 获取信息
-        name = get_server_name(html) or f'Server-{server_id}'
+        # 获取到期时间
         expiry = get_expiry(html)
         days = days_until(expiry)
         
-        log(f'名称: {name}')
         log(f'到期: {expiry or "未知"} | 剩余: {days if days is not None else "?"} 天')
         
         # 检查 URL 是否已有续订结果
@@ -269,6 +265,7 @@ class KataBumpRenewer:
         log('执行续订...')
         csrf = get_csrf(html)
         if not csrf:
+            log('无法获取 CSRF token', 'ERROR')
             return {'id': server_id, 'name': name, 'action': 'error', 'msg': '无法获取 CSRF', 'ok': False}
         
         # 更新 referer
@@ -316,11 +313,16 @@ class KataBumpRenewer:
         
         servers = self.get_servers()
         
+        if not servers:
+            log('没有服务器需要处理')
+            tg_notify('📋 <b>KataBump</b>\n\n没有服务器')
+            return True
+        
         results = []
-        for i, sid in enumerate(servers):
+        for i, server_info in enumerate(servers):
             if i > 0:
                 time.sleep(random.uniform(2, 4))
-            results.append(self.process_server(sid))
+            results.append(self.process_server(server_info))
         
         # 汇总
         log('')
