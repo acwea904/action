@@ -1,94 +1,178 @@
 #!/usr/bin/env python3
 """
 KataBump 自动续订 - Playwright 版本
-模拟真实浏览器行为
+参考 Lunes 脚本风格
 """
 
 import os
 import sys
 import json
-import time
-import random
-import base64
-import urllib.request
-import urllib.parse
-from datetime import datetime, timedelta
+import re
+from datetime import datetime
 from pathlib import Path
 
 try:
-    from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+    from playwright.sync_api import sync_playwright
     from nacl import encoding, public
 except ImportError as e:
-    print(f"❌ 缺少依赖: {e}")
-    print("请运行: pip install playwright pynacl")
+    print(f"[ERROR] 缺少依赖: {e}")
+    print("请运行: pip install playwright pynacl && playwright install chromium")
     sys.exit(1)
 
-# ============ 配置 ============
+# ==================== 配置 ====================
+
 BASE_URL = "https://katabump.com"
-RENEW_THRESHOLD_DAYS = 2
-PROFILE_DIR = "pw_profiles"
-PROXY_SERVER = "http://127.0.0.1:8080"
+RENEW_THRESHOLD_DAYS = 1
 
-# ============ 工具函数 ============
-def log(msg, level="📋"):
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {level} {msg}")
+# ==================== 工具函数 ====================
 
-def random_delay(min_sec=0.5, max_sec=2.0):
-    """模拟人类操作延迟"""
-    time.sleep(random.uniform(min_sec, max_sec))
-
-def human_type(page, selector, text):
-    """模拟人类打字"""
-    element = page.locator(selector)
-    element.click()
-    random_delay(0.1, 0.3)
-    for char in text:
-        element.type(char, delay=random.randint(50, 150))
-    random_delay(0.2, 0.5)
-
-# ============ Telegram 通知 ============
-def send_telegram(message):
-    bot_token = os.environ.get("TG_BOT_TOKEN")
-    chat_id = os.environ.get("TG_CHAT_ID")
-    
-    if not bot_token or not chat_id:
-        log("未配置 Telegram，跳过通知", "⚠️")
-        return
-    
+def notify_telegram(ok: bool, stage: str, msg: str = "", screenshot_path: str = ""):
+    """发送 Telegram 通知"""
     try:
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        import urllib.request
+        import urllib.parse
+        
+        token = os.environ.get("TG_BOT_TOKEN")
+        chat_id = os.environ.get("TG_CHAT_ID")
+        if not token or not chat_id:
+            return
+        
+        status = "✅ 成功" if ok else "❌ 失败"
+        text_lines = [
+            f"🔔 KataBump 自动续订：{status}",
+            f"阶段：{stage}",
+        ]
+        if msg:
+            text_lines.append(f"信息：{msg}")
+        text_lines.append(f"时间：{datetime.utcnow().isoformat()}")
+        
+        text = "\n".join(text_lines)
+        
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
         data = urllib.parse.urlencode({
             "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "HTML"
+            "text": text,
+            "disable_web_page_preview": "true"
         }).encode()
         
         req = urllib.request.Request(url, data=data)
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            if resp.status == 200:
-                log("Telegram 通知已发送", "✅")
+        urllib.request.urlopen(req, timeout=10)
+        
+        # 发送截图
+        if screenshot_path and Path(screenshot_path).exists():
+            send_telegram_photo(token, chat_id, screenshot_path, f"截图（{stage}）")
+            
     except Exception as e:
-        log(f"Telegram 发送失败: {e}", "⚠️")
+        print(f"[WARN] Telegram 通知失败：{e}")
 
-# ============ GitHub Secrets ============
-def encrypt_secret(public_key: str, secret_value: str) -> str:
-    """加密 secret 值"""
-    public_key_bytes = public.PublicKey(public_key.encode("utf-8"), encoding.Base64Encoder())
-    sealed_box = public.SealedBox(public_key_bytes)
-    encrypted = sealed_box.encrypt(secret_value.encode("utf-8"))
-    return base64.b64encode(encrypted).decode("utf-8")
 
-def update_github_secret(secret_name: str, secret_value: str):
-    """更新 GitHub Secret"""
+def send_telegram_photo(token: str, chat_id: str, photo_path: str, caption: str):
+    """发送截图到 Telegram"""
+    try:
+        import urllib.request
+        
+        boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+        
+        with open(photo_path, "rb") as f:
+            photo_data = f.read()
+        
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="chat_id"\r\n\r\n{chat_id}\r\n'
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="caption"\r\n\r\n{caption}\r\n'
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="photo"; filename="screenshot.png"\r\n'
+            f"Content-Type: image/png\r\n\r\n"
+        ).encode() + photo_data + f"\r\n--{boundary}--\r\n".encode()
+        
+        url = f"https://api.telegram.org/bot{token}/sendPhoto"
+        req = urllib.request.Request(url, data=body)
+        req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+        urllib.request.urlopen(req, timeout=30)
+        
+    except Exception as e:
+        print(f"[WARN] 发送截图失败：{e}")
+
+
+def parse_cookie_string(cookie_str: str, domain: str) -> list:
+    """解析 cookie 字符串为 Playwright 格式"""
+    if not cookie_str:
+        return []
+    
+    cookies = []
+    
+    # 尝试 JSON 格式
+    try:
+        cookies_dict = json.loads(cookie_str)
+        for name, value in cookies_dict.items():
+            cookies.append({
+                "name": name,
+                "value": value,
+                "domain": domain,
+                "path": "/",
+                "secure": True,
+                "sameSite": "Lax"
+            })
+        return cookies
+    except json.JSONDecodeError:
+        pass
+    
+    # 字符串格式: name=value; name2=value2
+    for c in cookie_str.split(";"):
+        c = c.strip()
+        if "=" not in c:
+            continue
+        
+        eq_index = c.index("=")
+        name = c[:eq_index].strip()
+        value = c[eq_index + 1:].strip()
+        
+        try:
+            import urllib.parse
+            value = urllib.parse.unquote(value)
+        except:
+            pass
+        
+        cookies.append({
+            "name": name,
+            "value": value,
+            "domain": domain,
+            "path": "/",
+            "secure": True,
+            "httpOnly": "session" in name.lower(),
+            "sameSite": "Lax"
+        })
+    
+    return cookies
+
+
+def save_cookies_for_update(cookies: list):
+    """保存 cookies 供后续更新"""
+    import base64
+    
+    # 筛选 katabump 的 cookies
+    filtered = {c["name"]: c["value"] for c in cookies if "katabump" in c.get("domain", "")}
+    
+    if not filtered:
+        return
+    
+    # 保存到文件
+    cookies_json = json.dumps(filtered)
+    Path("new_cookies.txt").write_text(cookies_json)
+    print(f"[INFO] 新 cookies 已保存到 new_cookies.txt")
+    
+    # 更新 GitHub Secret
     token = os.environ.get("REPO_TOKEN")
     repo = os.environ.get("GITHUB_REPOSITORY")
     
     if not token or not repo:
-        log("未配置 REPO_TOKEN，无法更新 Secret", "⚠️")
-        return False
+        print("[WARN] 未配置 REPO_TOKEN，跳过更新 Secret")
+        return
     
     try:
+        import urllib.request
+        
         # 获取公钥
         url = f"https://api.github.com/repos/{repo}/actions/secrets/public-key"
         req = urllib.request.Request(url, headers={
@@ -99,10 +183,14 @@ def update_github_secret(secret_name: str, secret_value: str):
         with urllib.request.urlopen(req, timeout=10) as resp:
             key_data = json.loads(resp.read().decode())
         
-        # 加密并更新
-        encrypted_value = encrypt_secret(key_data["key"], secret_value)
+        # 加密
+        public_key = public.PublicKey(key_data["key"].encode(), encoding.Base64Encoder())
+        sealed_box = public.SealedBox(public_key)
+        encrypted = sealed_box.encrypt(cookies_json.encode())
+        encrypted_value = base64.b64encode(encrypted).decode()
         
-        url = f"https://api.github.com/repos/{repo}/actions/secrets/{secret_name}"
+        # 更新
+        url = f"https://api.github.com/repos/{repo}/actions/secrets/KATA_COOKIES"
         data = json.dumps({
             "encrypted_value": encrypted_value,
             "key_id": key_data["key_id"]
@@ -116,364 +204,322 @@ def update_github_secret(secret_name: str, secret_value: str):
         
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status in [201, 204]:
-                log(f"GitHub Secret {secret_name} 已更新", "✅")
-                return True
+                print("[INFO] ✅ GitHub Secret KATA_COOKIES 已更新")
+                
     except Exception as e:
-        log(f"更新 GitHub Secret 失败: {e}", "❌")
-    
-    return False
+        print(f"[WARN] 更新 GitHub Secret 失败：{e}")
 
-# ============ 核心逻辑 ============
-class KataBumpRenewer:
-    def __init__(self):
-        self.playwright = None
-        self.browser = None
-        self.context = None
-        self.page = None
-        
-    def start_browser(self):
-        """启动浏览器"""
-        self.playwright = sync_playwright().start()
-        
-        # 创建 profile 目录
-        profile_path = Path(PROFILE_DIR)
-        profile_path.mkdir(exist_ok=True)
-        
+
+def screenshot(name: str) -> str:
+    """生成截图路径"""
+    return f"./{name}.png"
+
+
+# ==================== 主函数 ====================
+
+def main():
+    preset_cookies = os.environ.get("KATA_COOKIES", "")
+    proxy_server = os.environ.get("PROXY_SERVER", "http://127.0.0.1:8080")
+    force_renew = os.environ.get("FORCE_RENEW", "false").lower() == "true"
+    
+    print("[INFO] 启动浏览器...")
+    if proxy_server:
+        print("[INFO] 使用代理: 已启用")
+    
+    with sync_playwright() as p:
         # 启动浏览器
-        self.browser = self.playwright.chromium.launch(
+        browser = p.chromium.launch(
             headless=True,
             args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
                 "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--no-sandbox"
+                "--disable-dev-shm-usage"
             ]
         )
         
-        # 创建上下文（带代理和持久化存储）
-        self.context = self.browser.new_context(
-            proxy={"server": PROXY_SERVER},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080},
-            locale="en-US",
-            timezone_id="America/New_York"
-        )
+        context_options = {
+            "viewport": {"width": 1366, "height": 768},
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "locale": "en-US",
+            "timezone_id": "America/New_York"
+        }
         
-        # 加载已保存的 cookies
-        self.load_cookies()
+        if proxy_server:
+            context_options["proxy"] = {"server": proxy_server}
         
-        self.page = self.context.new_page()
+        context = browser.new_context(**context_options)
+        page = context.new_page()
         
-        # 注入反检测脚本
-        self.page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+        # 反检测
+        page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
         """)
         
-        log("浏览器已启动", "✅")
-    
-    def load_cookies(self):
-        """从环境变量加载 cookies"""
-        cookies_str = os.environ.get("KATA_COOKIES", "")
-        if not cookies_str:
-            return
-        
         try:
-            cookies = json.loads(cookies_str)
-            # 转换为 Playwright 格式
-            pw_cookies = []
-            for name, value in cookies.items():
-                pw_cookies.append({
-                    "name": name,
-                    "value": value,
-                    "domain": ".katabump.com",
-                    "path": "/"
-                })
-            self.context.add_cookies(pw_cookies)
-            log(f"已加载 {len(pw_cookies)} 个 cookies", "✅")
-        except Exception as e:
-            log(f"加载 cookies 失败: {e}", "⚠️")
-    
-    def save_cookies(self):
-        """保存 cookies 到 GitHub Secret"""
-        try:
-            cookies = self.context.cookies()
-            cookies_dict = {c["name"]: c["value"] for c in cookies if "katabump" in c.get("domain", "")}
+            # ========== 1. 注入预置 Cookies ==========
+            if preset_cookies:
+                print("[INFO] 注入预置 Cookies...")
+                cookies = parse_cookie_string(preset_cookies, ".katabump.com")
+                print(f"[INFO] 解析到 {len(cookies)} 个 cookies")
+                if cookies:
+                    context.add_cookies(cookies)
             
-            if cookies_dict:
-                cookies_json = json.dumps(cookies_dict)
-                update_github_secret("KATA_COOKIES", cookies_json)
-        except Exception as e:
-            log(f"保存 cookies 失败: {e}", "⚠️")
-    
-    def close_browser(self):
-        """关闭浏览器"""
-        if self.context:
-            self.save_cookies()
-            self.context.close()
-        if self.browser:
-            self.browser.close()
-        if self.playwright:
-            self.playwright.stop()
-    
-    def check_login(self) -> bool:
-        """检查是否已登录"""
-        try:
-            self.page.goto(f"{BASE_URL}/servers", wait_until="networkidle", timeout=30000)
-            random_delay(1, 2)
+            # ========== 2. 访问 Dashboard ==========
+            print("[INFO] 访问服务器列表...")
+            page.goto(f"{BASE_URL}/servers", wait_until="networkidle", timeout=60000)
+            page.wait_for_timeout(3000)
             
-            # 检查是否在登录页
-            if "/login" in self.page.url:
-                return False
+            current_url = page.url
+            title = page.title()
+            print(f"[INFO] URL: {current_url}")
+            print(f"[INFO] Title: {title}")
             
-            # 检查是否有服务器列表
-            if self.page.locator("text=My Servers").count() > 0:
-                return True
-            if self.page.locator(".server-card, [class*='server']").count() > 0:
-                return True
+            # ========== 3. 检查登录状态 ==========
+            need_login = "/login" in current_url or "/auth" in current_url
+            
+            if need_login:
+                print("[INFO] ❌ 未登录，Cookies 可能已过期")
                 
-            return False
-        except Exception as e:
-            log(f"检查登录状态失败: {e}", "❌")
-            return False
-    
-    def get_servers(self) -> list:
-        """获取服务器列表"""
-        servers = []
-        
-        try:
-            self.page.goto(f"{BASE_URL}/servers", wait_until="networkidle", timeout=30000)
-            random_delay(1, 2)
+                sp = screenshot("01-need-login")
+                page.screenshot(path=sp, full_page=True)
+                
+                notify_telegram(
+                    ok=False,
+                    stage="登录检查",
+                    msg="Cookies 已过期，请更新 KATA_COOKIES",
+                    screenshot_path=sp
+                )
+                sys.exit(1)
             
-            # 等待页面加载
-            self.page.wait_for_selector("a[href*='/servers/']", timeout=10000)
+            print("[INFO] ✅ 已登录")
             
-            # 获取所有服务器链接
-            links = self.page.locator("a[href*='/servers/']").all()
+            # ========== 4. 保存新 Cookies ==========
+            sp_dashboard = screenshot("02-dashboard")
+            page.screenshot(path=sp_dashboard, full_page=True)
+            
+            new_cookies = context.cookies()
+            save_cookies_for_update(new_cookies)
+            
+            # ========== 5. 获取服务器列表 ==========
+            print("[INFO] 获取服务器列表...")
+            
+            try:
+                page.wait_for_selector("a[href*='/servers/']", timeout=10000)
+            except:
+                print("[WARN] 未找到服务器链接，尝试其他选择器...")
+            
+            servers = []
+            links = page.locator("a[href*='/servers/']").all()
             
             for link in links:
-                href = link.get_attribute("href")
-                if href and "/servers/" in href:
-                    server_id = href.split("/servers/")[-1].split("/")[0].split("?")[0]
-                    if server_id.isdigit():
-                        # 获取服务器名称
-                        name = link.inner_text().strip() or f"Server-{server_id}"
-                        servers.append({
-                            "id": server_id,
-                            "name": name[:20]
-                        })
-            
-            # 去重
-            seen = set()
-            unique_servers = []
-            for s in servers:
-                if s["id"] not in seen:
-                    seen.add(s["id"])
-                    unique_servers.append(s)
-            
-            return unique_servers
-            
-        except Exception as e:
-            log(f"获取服务器列表失败: {e}", "❌")
-            return []
-    
-    def get_server_expiry(self, server_id: str) -> tuple:
-        """获取服务器到期时间"""
-        try:
-            self.page.goto(f"{BASE_URL}/servers/{server_id}", wait_until="networkidle", timeout=30000)
-            random_delay(1, 2)
-            
-            # 查找到期时间文本
-            page_text = self.page.content()
-            
-            # 尝试多种模式匹配
-            import re
-            patterns = [
-                r"expires?\s*:?\s*(\d{4}-\d{2}-\d{2})",
-                r"expiry\s*:?\s*(\d{4}-\d{2}-\d{2})",
-                r"valid\s+until\s*:?\s*(\d{4}-\d{2}-\d{2})",
-                r"(\d{4}-\d{2}-\d{2})\s*\(?\s*\d+\s*days?\s*(?:left|remaining)",
-            ]
-            
-            for pattern in patterns:
-                match = re.search(pattern, page_text, re.IGNORECASE)
+                href = link.get_attribute("href") or ""
+                match = re.search(r"/servers/(\d+)", href)
                 if match:
-                    expiry_str = match.group(1)
-                    expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d")
-                    days_left = (expiry_date - datetime.utcnow()).days
-                    return expiry_date, days_left
-            
-            log(f"无法解析服务器 {server_id} 的到期时间", "⚠️")
-            return None, None
-            
-        except Exception as e:
-            log(f"获取到期时间失败: {e}", "❌")
-            return None, None
-    
-    def renew_server(self, server_id: str, server_name: str) -> bool:
-        """续订服务器"""
-        try:
-            self.page.goto(f"{BASE_URL}/servers/{server_id}", wait_until="networkidle", timeout=30000)
-            random_delay(1, 2)
-            
-            # 模拟鼠标移动
-            self.page.mouse.move(random.randint(100, 500), random.randint(100, 500))
-            random_delay(0.3, 0.8)
-            
-            # 查找续订按钮
-            renew_btn = None
-            selectors = [
-                "button:has-text('Renew')",
-                "a:has-text('Renew')",
-                "[class*='renew']",
-                "button:has-text('Extend')",
-            ]
-            
-            for selector in selectors:
-                if self.page.locator(selector).count() > 0:
-                    renew_btn = self.page.locator(selector).first
-                    break
-            
-            if not renew_btn:
-                log(f"未找到续订按钮", "❌")
-                return False
-            
-            # 滚动到按钮位置
-            renew_btn.scroll_into_view_if_needed()
-            random_delay(0.5, 1)
-            
-            # 点击续订
-            renew_btn.click()
-            random_delay(2, 3)
-            
-            # 检查是否需要确认
-            confirm_selectors = [
-                "button:has-text('Confirm')",
-                "button:has-text('Yes')",
-                "button:has-text('OK')",
-            ]
-            
-            for selector in confirm_selectors:
-                if self.page.locator(selector).count() > 0:
-                    random_delay(0.5, 1)
-                    self.page.locator(selector).first.click()
-                    random_delay(1, 2)
-                    break
-            
-            # 等待页面响应
-            self.page.wait_for_load_state("networkidle", timeout=10000)
-            
-            # 验证续订成功
-            new_expiry, new_days = self.get_server_expiry(server_id)
-            if new_expiry and new_days > RENEW_THRESHOLD_DAYS:
-                log(f"续订成功！新到期: {new_expiry.strftime('%Y-%m-%d')}", "✅")
-                return True
-            
-            return False
-            
-        except PlaywrightTimeout:
-            log("操作超时", "❌")
-            return False
-        except Exception as e:
-            log(f"续订失败: {e}", "❌")
-            return False
-    
-    def run(self):
-        """主运行逻辑"""
-        log("=" * 50)
-        log("KataBump 自动续订 (Playwright)")
-        log("=" * 50)
-        
-        force_renew = os.environ.get("FORCE_RENEW", "false").lower() == "true"
-        results = []
-        
-        try:
-            self.start_browser()
-            
-            # 检查登录状态
-            log("检查登录状态...")
-            if not self.check_login():
-                log("未登录或 cookies 已过期", "❌")
-                send_telegram("❌ <b>KataBump</b>\n\nCookies 已过期，请更新！")
-                return
-            
-            log("已登录", "✅")
-            random_delay(1, 2)
-            
-            # 获取服务器列表
-            log("获取服务器列表...")
-            servers = self.get_servers()
+                    server_id = match.group(1)
+                    name = link.inner_text().strip()[:30] or f"Server-{server_id}"
+                    if server_id not in [s["id"] for s in servers]:
+                        servers.append({"id": server_id, "name": name})
             
             if not servers:
-                log("未找到服务器", "❌")
-                return
+                print("[ERROR] 未找到任何服务器")
+                sp = screenshot("03-no-servers")
+                page.screenshot(path=sp, full_page=True)
+                notify_telegram(ok=False, stage="获取服务器", msg="未找到服务器", screenshot_path=sp)
+                sys.exit(1)
             
-            log(f"找到 {len(servers)} 个服务器", "✅")
+            print(f"[INFO] 找到 {len(servers)} 个服务器")
+            for s in servers:
+                print(f"[INFO]   - {s['id']}: {s['name']}")
             
-            # 处理每个服务器
+            # ========== 6. 处理每个服务器 ==========
+            results = []
+            
             for server in servers:
                 server_id = server["id"]
                 server_name = server["name"]
                 
-                log("")
-                log(f"━━━ {server_name} (ID: {server_id}) ━━━")
+                print(f"\n[INFO] ━━━ {server_name} (ID: {server_id}) ━━━")
                 
-                random_delay(1, 2)
+                # 访问服务器详情页
+                page.goto(f"{BASE_URL}/servers/{server_id}", wait_until="networkidle", timeout=30000)
+                page.wait_for_timeout(2000)
                 
                 # 获取到期时间
-                expiry_date, days_left = self.get_server_expiry(server_id)
+                page_text = page.content()
+                
+                expiry_date = None
+                days_left = None
+                
+                patterns = [
+                    r"(\d{4}-\d{2}-\d{2})\s*\(?\s*(\d+)\s*days?\s*(?:left|remaining)",
+                    r"expires?\s*:?\s*(\d{4}-\d{2}-\d{2})",
+                    r"expiry\s*:?\s*(\d{4}-\d{2}-\d{2})",
+                    r"valid\s+until\s*:?\s*(\d{4}-\d{2}-\d{2})",
+                ]
+                
+                for pattern in patterns:
+                    match = re.search(pattern, page_text, re.IGNORECASE)
+                    if match:
+                        expiry_str = match.group(1)
+                        expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d")
+                        days_left = (expiry_date - datetime.utcnow()).days
+                        if len(match.groups()) >= 2:
+                            try:
+                                days_left = int(match.group(2))
+                            except:
+                                pass
+                        break
                 
                 if expiry_date is None:
-                    log("无法获取到期时间", "⚠️")
+                    print("[WARN] 无法获取到期时间")
                     results.append(f"⚠️ {server_name}: 无法获取状态")
                     continue
                 
-                log(f"到期: {expiry_date.strftime('%Y-%m-%d')} | 剩余: {days_left} 天")
+                print(f"[INFO] 到期: {expiry_date.strftime('%Y-%m-%d')} | 剩余: {days_left} 天")
                 
                 # 判断是否需要续订
                 need_renew = days_left <= RENEW_THRESHOLD_DAYS or force_renew
                 
                 if not need_renew:
-                    log("无需续订", "✅")
+                    print("[INFO] ✅ 无需续订")
                     results.append(f"✅ {server_name}: {days_left}天后到期")
                     continue
                 
-                # 执行续订
+                # ========== 7. 执行续订 ==========
                 reason = "强制续订" if force_renew else f"剩余{days_left}天"
-                log(f"开始续订 ({reason})...")
+                print(f"[INFO] 开始续订 ({reason})...")
                 
-                random_delay(1, 2)
+                # 查找续订按钮
+                renew_btn = None
+                btn_selectors = [
+                    "button:has-text('Renew')",
+                    "a:has-text('Renew')",
+                    "button:has-text('Extend')",
+                    "[class*='renew']",
+                ]
                 
-                if self.renew_server(server_id, server_name):
-                    new_expiry, new_days = self.get_server_expiry(server_id)
-                    if new_expiry:
-                        results.append(f"🎉 {server_name}: 续订成功，新到期 {new_expiry.strftime('%Y-%m-%d')}")
-                    else:
-                        results.append(f"🎉 {server_name}: 续订成功")
+                for selector in btn_selectors:
+                    try:
+                        if page.locator(selector).count() > 0:
+                            renew_btn = page.locator(selector).first
+                            print(f"[INFO] 找到续订按钮: {selector}")
+                            break
+                    except:
+                        continue
+                
+                if not renew_btn:
+                    print("[ERROR] 未找到续订按钮")
+                    sp = screenshot(f"04-no-btn-{server_id}")
+                    page.screenshot(path=sp, full_page=True)
+                    results.append(f"❌ {server_name}: 未找到续订按钮")
+                    continue
+                
+                # 截图 - 续订前
+                sp_before = screenshot(f"05-before-{server_id}")
+                page.screenshot(path=sp_before, full_page=True)
+                
+                # 点击续订
+                renew_btn.click()
+                page.wait_for_timeout(3000)
+                
+                # 检查确认对话框
+                confirm_selectors = [
+                    "button:has-text('Confirm')",
+                    "button:has-text('Yes')",
+                    "button:has-text('OK')",
+                    ".modal button.btn-primary",
+                ]
+                
+                for selector in confirm_selectors:
+                    try:
+                        if page.locator(selector).count() > 0:
+                            print(f"[INFO] 点击确认: {selector}")
+                            page.locator(selector).first.click()
+                            page.wait_for_timeout(2000)
+                            break
+                    except:
+                        continue
+                
+                page.wait_for_load_state("networkidle", timeout=10000)
+                page.wait_for_timeout(2000)
+                
+                # 截图 - 续订后
+                sp_after = screenshot(f"06-after-{server_id}")
+                page.screenshot(path=sp_after, full_page=True)
+                
+                # 验证结果
+                page.reload(wait_until="networkidle")
+                page.wait_for_timeout(2000)
+                
+                new_page_text = page.content()
+                new_expiry = None
+                new_days = None
+                
+                for pattern in patterns:
+                    match = re.search(pattern, new_page_text, re.IGNORECASE)
+                    if match:
+                        new_expiry_str = match.group(1)
+                        new_expiry = datetime.strptime(new_expiry_str, "%Y-%m-%d")
+                        new_days = (new_expiry - datetime.utcnow()).days
+                        break
+                
+                if new_expiry and new_days > days_left:
+                    print(f"[INFO] ✅ 续订成功！新到期: {new_expiry.strftime('%Y-%m-%d')}")
+                    results.append(f"🎉 {server_name}: 续订成功，{new_expiry.strftime('%Y-%m-%d')}")
+                    
+                    notify_telegram(
+                        ok=True,
+                        stage=f"续订成功 - {server_name}",
+                        msg=f"新到期: {new_expiry.strftime('%Y-%m-%d')}",
+                        screenshot_path=sp_after
+                    )
                 else:
-                    results.append(f"❌ {server_name}: 续订失败")
-                
-                random_delay(2, 4)
+                    print("[WARN] 续订状态未知")
+                    results.append(f"⚠️ {server_name}: 续订状态未知")
+                    
+                    notify_telegram(
+                        ok=False,
+                        stage=f"续订未知 - {server_name}",
+                        msg="请检查截图",
+                        screenshot_path=sp_after
+                    )
+            
+            # ========== 8. 汇总报告 ==========
+            print("\n[INFO] " + "=" * 50)
+            print("[INFO] 完成")
+            
+            summary = "\n".join(results)
+            print(f"\n{summary}")
+            
+            if results:
+                notify_telegram(ok=True, stage="执行完成", msg=summary)
+            
+            print("[INFO] 🏁 结束")
             
         except Exception as e:
-            log(f"运行出错: {e}", "❌")
-            results.append(f"❌ 运行出错: {e}")
-        
+            print(f"[ERROR] {e}")
+            
+            sp = screenshot("99-error")
+            try:
+                page.screenshot(path=sp, full_page=True)
+            except:
+                pass
+            
+            notify_telegram(
+                ok=False,
+                stage="异常",
+                msg=str(e),
+                screenshot_path=sp if Path(sp).exists() else ""
+            )
+            sys.exit(1)
+            
         finally:
-            self.close_browser()
-        
-        # 发送汇总通知
-        log("")
-        log("=" * 50)
-        log("完成")
-        
-        if results:
-            summary = "\n".join(results)
-            message = f"📋 <b>KataBump 续订报告</b>\n\n{summary}"
-            send_telegram(message)
-        
-        log("🏁 结束")
+            context.close()
+            browser.close()
 
-# ============ 入口 ============
+
+# ==================== 入口 ====================
+
 if __name__ == "__main__":
-    renewer = KataBumpRenewer()
-    renewer.run()
+    main()
