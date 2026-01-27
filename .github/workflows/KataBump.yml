@@ -68,6 +68,8 @@ jobs:
       - name: 运行续订
         env:
           KATA_COOKIES: ${{ secrets.KATA_COOKIES }}
+          KATA_USERNAME: ${{ secrets.KATA_EMAIL }}
+          KATA_PASSWORD: ${{ secrets.KATA_PASSWORD }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
