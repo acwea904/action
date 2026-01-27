@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 KataBump 自动续订 - Playwright 版本
-参考 Lunes 脚本风格
 """
 
 import os
@@ -16,13 +15,12 @@ try:
     from nacl import encoding, public
 except ImportError as e:
     print(f"[ERROR] 缺少依赖: {e}")
-    print("请运行: pip install playwright pynacl && playwright install chromium")
     sys.exit(1)
 
 # ==================== 配置 ====================
 
 BASE_URL = "https://katabump.com"
-RENEW_THRESHOLD_DAYS = 1
+RENEW_THRESHOLD_DAYS = 2
 
 # ==================== 工具函数 ====================
 
@@ -58,7 +56,6 @@ def notify_telegram(ok: bool, stage: str, msg: str = "", screenshot_path: str = 
         req = urllib.request.Request(url, data=data)
         urllib.request.urlopen(req, timeout=10)
         
-        # 发送截图
         if screenshot_path and Path(screenshot_path).exists():
             send_telegram_photo(token, chat_id, screenshot_path, f"截图（{stage}）")
             
@@ -118,7 +115,7 @@ def parse_cookie_string(cookie_str: str, domain: str) -> list:
     except json.JSONDecodeError:
         pass
     
-    # 字符串格式: name=value; name2=value2
+    # 字符串格式
     for c in cookie_str.split(";"):
         c = c.strip()
         if "=" not in c:
@@ -140,7 +137,6 @@ def parse_cookie_string(cookie_str: str, domain: str) -> list:
             "domain": domain,
             "path": "/",
             "secure": True,
-            "httpOnly": "session" in name.lower(),
             "sameSite": "Lax"
         })
     
@@ -148,32 +144,27 @@ def parse_cookie_string(cookie_str: str, domain: str) -> list:
 
 
 def save_cookies_for_update(cookies: list):
-    """保存 cookies 供后续更新"""
+    """保存 cookies"""
     import base64
     
-    # 筛选 katabump 的 cookies
     filtered = {c["name"]: c["value"] for c in cookies if "katabump" in c.get("domain", "")}
     
     if not filtered:
         return
     
-    # 保存到文件
     cookies_json = json.dumps(filtered)
     Path("new_cookies.txt").write_text(cookies_json)
-    print(f"[INFO] 新 cookies 已保存到 new_cookies.txt")
+    print(f"[INFO] 新 cookies 已保存")
     
-    # 更新 GitHub Secret
     token = os.environ.get("REPO_TOKEN")
     repo = os.environ.get("GITHUB_REPOSITORY")
     
     if not token or not repo:
-        print("[WARN] 未配置 REPO_TOKEN，跳过更新 Secret")
         return
     
     try:
         import urllib.request
         
-        # 获取公钥
         url = f"https://api.github.com/repos/{repo}/actions/secrets/public-key"
         req = urllib.request.Request(url, headers={
             "Authorization": f"Bearer {token}",
@@ -183,13 +174,11 @@ def save_cookies_for_update(cookies: list):
         with urllib.request.urlopen(req, timeout=10) as resp:
             key_data = json.loads(resp.read().decode())
         
-        # 加密
         public_key = public.PublicKey(key_data["key"].encode(), encoding.Base64Encoder())
         sealed_box = public.SealedBox(public_key)
         encrypted = sealed_box.encrypt(cookies_json.encode())
         encrypted_value = base64.b64encode(encrypted).decode()
         
-        # 更新
         url = f"https://api.github.com/repos/{repo}/actions/secrets/KATA_COOKIES"
         data = json.dumps({
             "encrypted_value": encrypted_value,
@@ -204,14 +193,13 @@ def save_cookies_for_update(cookies: list):
         
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status in [201, 204]:
-                print("[INFO] ✅ GitHub Secret KATA_COOKIES 已更新")
+                print("[INFO] ✅ GitHub Secret 已更新")
                 
     except Exception as e:
-        print(f"[WARN] 更新 GitHub Secret 失败：{e}")
+        print(f"[WARN] 更新 Secret 失败：{e}")
 
 
 def screenshot(name: str) -> str:
-    """生成截图路径"""
     return f"./{name}.png"
 
 
@@ -227,7 +215,6 @@ def main():
         print("[INFO] 使用代理: 已启用")
     
     with sync_playwright() as p:
-        # 启动浏览器
         browser = p.chromium.launch(
             headless=True,
             args=[
@@ -251,13 +238,12 @@ def main():
         context = browser.new_context(**context_options)
         page = context.new_page()
         
-        # 反检测
         page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
         """)
         
         try:
-            # ========== 1. 注入预置 Cookies ==========
+            # ========== 1. 注入 Cookies ==========
             if preset_cookies:
                 print("[INFO] 注入预置 Cookies...")
                 cookies = parse_cookie_string(preset_cookies, ".katabump.com")
@@ -266,8 +252,8 @@ def main():
                     context.add_cookies(cookies)
             
             # ========== 2. 访问 Dashboard ==========
-            print("[INFO] 访问服务器列表...")
-            page.goto(f"{BASE_URL}/servers", wait_until="networkidle", timeout=60000)
+            print("[INFO] 访问 Dashboard...")
+            page.goto(f"{BASE_URL}/dashboard", wait_until="networkidle", timeout=60000)
             page.wait_for_timeout(3000)
             
             current_url = page.url
@@ -275,62 +261,186 @@ def main():
             print(f"[INFO] URL: {current_url}")
             print(f"[INFO] Title: {title}")
             
-            # ========== 3. 检查登录状态 ==========
-            need_login = "/login" in current_url or "/auth" in current_url
+            # 截图
+            sp_init = screenshot("01-initial")
+            page.screenshot(path=sp_init, full_page=True)
             
-            if need_login:
-                print("[INFO] ❌ 未登录，Cookies 可能已过期")
-                
-                sp = screenshot("01-need-login")
-                page.screenshot(path=sp, full_page=True)
-                
+            # ========== 3. 检查登录状态 ==========
+            # 检查是否在登录页或 404 页
+            is_login_page = "/login" in current_url or "/auth" in current_url
+            is_404 = "404" in title or "Not Found" in title
+            
+            if is_login_page:
+                print("[ERROR] ❌ 未登录，需要更新 Cookies")
                 notify_telegram(
                     ok=False,
                     stage="登录检查",
                     msg="Cookies 已过期，请更新 KATA_COOKIES",
-                    screenshot_path=sp
+                    screenshot_path=sp_init
                 )
                 sys.exit(1)
             
+            if is_404:
+                print("[WARN] Dashboard 返回 404，尝试其他路径...")
+                
+                # 尝试不同的路径
+                alt_paths = [
+                    "/en/dashboard",
+                    "/panel",
+                    "/en/panel",
+                    "/bots",
+                    "/en/bots",
+                    "/",
+                ]
+                
+                found_dashboard = False
+                for path in alt_paths:
+                    print(f"[INFO] 尝试: {BASE_URL}{path}")
+                    page.goto(f"{BASE_URL}{path}", wait_until="networkidle", timeout=30000)
+                    page.wait_for_timeout(2000)
+                    
+                    new_title = page.title()
+                    new_url = page.url
+                    print(f"[INFO]   -> Title: {new_title}")
+                    
+                    if "404" not in new_title and "Not Found" not in new_title:
+                        if "/login" not in new_url and "/auth" not in new_url:
+                            found_dashboard = True
+                            print(f"[INFO] ✅ 找到有效页面: {new_url}")
+                            break
+                
+                if not found_dashboard:
+                    print("[ERROR] 无法找到有效的 Dashboard 页面")
+                    sp = screenshot("02-no-dashboard")
+                    page.screenshot(path=sp, full_page=True)
+                    notify_telegram(
+                        ok=False,
+                        stage="页面访问",
+                        msg="无法访问 Dashboard，可能 Cookies 已过期",
+                        screenshot_path=sp
+                    )
+                    sys.exit(1)
+            
             print("[INFO] ✅ 已登录")
             
-            # ========== 4. 保存新 Cookies ==========
+            # ========== 4. 截图并保存 Cookies ==========
             sp_dashboard = screenshot("02-dashboard")
             page.screenshot(path=sp_dashboard, full_page=True)
             
             new_cookies = context.cookies()
             save_cookies_for_update(new_cookies)
             
-            # ========== 5. 获取服务器列表 ==========
-            print("[INFO] 获取服务器列表...")
+            # ========== 5. 查找服务器/Bot 列表 ==========
+            print("[INFO] 查找服务器列表...")
             
-            try:
-                page.wait_for_selector("a[href*='/servers/']", timeout=10000)
-            except:
-                print("[WARN] 未找到服务器链接，尝试其他选择器...")
+            # 打印页面上所有链接，帮助调试
+            all_links = page.locator("a[href]").all()
+            print(f"[DEBUG] 页面上共有 {len(all_links)} 个链接")
             
-            servers = []
-            links = page.locator("a[href*='/servers/']").all()
-            
-            for link in links:
+            interesting_hrefs = []
+            for link in all_links[:30]:  # 只看前30个
                 href = link.get_attribute("href") or ""
-                match = re.search(r"/servers/(\d+)", href)
-                if match:
-                    server_id = match.group(1)
-                    name = link.inner_text().strip()[:30] or f"Server-{server_id}"
-                    if server_id not in [s["id"] for s in servers]:
-                        servers.append({"id": server_id, "name": name})
+                text = link.inner_text().strip()[:30]
+                if any(kw in href.lower() for kw in ["server", "bot", "panel", "manage", "dashboard"]):
+                    interesting_hrefs.append(f"{href} ({text})")
+            
+            if interesting_hrefs:
+                print("[DEBUG] 相关链接:")
+                for h in interesting_hrefs[:10]:
+                    print(f"[DEBUG]   - {h}")
+            
+            # 尝试多种选择器查找服务器
+            servers = []
+            
+            # 选择器列表 - 根据常见的 Discord bot hosting 面板
+            server_selectors = [
+                "a[href*='/server/']",
+                "a[href*='/servers/']",
+                "a[href*='/bot/']",
+                "a[href*='/bots/']",
+                "a[href*='/panel/']",
+                "a[href*='/manage/']",
+                "[class*='server'] a",
+                "[class*='bot'] a",
+                ".card a[href]",
+                "tr a[href]",  # 表格中的链接
+            ]
+            
+            for selector in server_selectors:
+                try:
+                    links = page.locator(selector).all()
+                    for link in links:
+                        href = link.get_attribute("href") or ""
+                        # 提取 ID
+                        match = re.search(r"/(server|bot|panel|manage)[s]?/(\d+)", href, re.IGNORECASE)
+                        if match:
+                            server_id = match.group(2)
+                            name = link.inner_text().strip()[:30] or f"Bot-{server_id}"
+                            if server_id not in [s["id"] for s in servers]:
+                                servers.append({
+                                    "id": server_id,
+                                    "name": name,
+                                    "href": href
+                                })
+                except:
+                    continue
+            
+            # 如果还是没找到，尝试点击 Dashboard 链接
+            if not servers:
+                print("[INFO] 尝试点击 Dashboard 链接...")
+                
+                dashboard_links = page.locator("a:has-text('Dashboard'), a:has-text('Manage'), a:has-text('My Bots')").all()
+                
+                for dash_link in dashboard_links[:3]:
+                    try:
+                        dash_link.click()
+                        page.wait_for_load_state("networkidle", timeout=10000)
+                        page.wait_for_timeout(2000)
+                        
+                        print(f"[INFO] 点击后 URL: {page.url}")
+                        
+                        # 再次查找
+                        for selector in server_selectors:
+                            links = page.locator(selector).all()
+                            for link in links:
+                                href = link.get_attribute("href") or ""
+                                match = re.search(r"/(server|bot|panel|manage)[s]?/(\d+)", href, re.IGNORECASE)
+                                if match:
+                                    server_id = match.group(2)
+                                    name = link.inner_text().strip()[:30] or f"Bot-{server_id}"
+                                    if server_id not in [s["id"] for s in servers]:
+                                        servers.append({
+                                            "id": server_id,
+                                            "name": name,
+                                            "href": href
+                                        })
+                        
+                        if servers:
+                            break
+                    except:
+                        continue
             
             if not servers:
-                print("[ERROR] 未找到任何服务器")
+                print("[ERROR] 未找到任何服务器/Bot")
                 sp = screenshot("03-no-servers")
                 page.screenshot(path=sp, full_page=True)
-                notify_telegram(ok=False, stage="获取服务器", msg="未找到服务器", screenshot_path=sp)
+                
+                # 打印页面 HTML 帮助调试
+                html_content = page.content()
+                Path("page_content.html").write_text(html_content)
+                print("[DEBUG] 页面 HTML 已保存到 page_content.html")
+                
+                notify_telegram(
+                    ok=False,
+                    stage="获取服务器",
+                    msg="未找到服务器，请检查截图",
+                    screenshot_path=sp
+                )
                 sys.exit(1)
             
-            print(f"[INFO] 找到 {len(servers)} 个服务器")
+            print(f"[INFO] 找到 {len(servers)} 个服务器/Bot")
             for s in servers:
-                print(f"[INFO]   - {s['id']}: {s['name']}")
+                print(f"[INFO]   - {s['id']}: {s['name']} ({s['href']})")
             
             # ========== 6. 处理每个服务器 ==========
             results = []
@@ -338,16 +448,25 @@ def main():
             for server in servers:
                 server_id = server["id"]
                 server_name = server["name"]
+                server_href = server["href"]
                 
                 print(f"\n[INFO] ━━━ {server_name} (ID: {server_id}) ━━━")
                 
-                # 访问服务器详情页
-                page.goto(f"{BASE_URL}/servers/{server_id}", wait_until="networkidle", timeout=30000)
+                # 访问服务器页面
+                full_url = server_href if server_href.startswith("http") else f"{BASE_URL}{server_href}"
+                page.goto(full_url, wait_until="networkidle", timeout=30000)
                 page.wait_for_timeout(2000)
                 
-                # 获取到期时间
+                print(f"[INFO] 访问: {page.url}")
+                
+                # 截图
+                sp_server = screenshot(f"04-server-{server_id}")
+                page.screenshot(path=sp_server, full_page=True)
+                
+                # 获取页面文本
                 page_text = page.content()
                 
+                # 查找到期时间
                 expiry_date = None
                 days_left = None
                 
@@ -356,27 +475,44 @@ def main():
                     r"expires?\s*:?\s*(\d{4}-\d{2}-\d{2})",
                     r"expiry\s*:?\s*(\d{4}-\d{2}-\d{2})",
                     r"valid\s+until\s*:?\s*(\d{4}-\d{2}-\d{2})",
+                    r"(\d{1,2})[/-](\d{1,2})[/-](\d{4})",  # MM/DD/YYYY 或 DD-MM-YYYY
+                    r"(\d+)\s*days?\s*(?:left|remaining)",  # 只有天数
                 ]
                 
                 for pattern in patterns:
                     match = re.search(pattern, page_text, re.IGNORECASE)
                     if match:
-                        expiry_str = match.group(1)
-                        expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d")
-                        days_left = (expiry_date - datetime.utcnow()).days
-                        if len(match.groups()) >= 2:
-                            try:
-                                days_left = int(match.group(2))
-                            except:
-                                pass
-                        break
+                        groups = match.groups()
+                        
+                        if len(groups) >= 2 and len(groups[0]) == 4:
+                            # YYYY-MM-DD 格式
+                            expiry_str = groups[0]
+                            expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d")
+                            days_left = (expiry_date - datetime.utcnow()).days
+                            if len(groups) >= 2:
+                                try:
+                                    days_left = int(groups[1])
+                                except:
+                                    pass
+                        elif len(groups) == 1 and groups[0].isdigit():
+                            # 只有天数
+                            days_left = int(groups[0])
+                            expiry_date = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+                            from datetime import timedelta
+                            expiry_date += timedelta(days=days_left)
+                        
+                        if expiry_date or days_left:
+                            break
                 
-                if expiry_date is None:
+                if expiry_date is None and days_left is None:
                     print("[WARN] 无法获取到期时间")
                     results.append(f"⚠️ {server_name}: 无法获取状态")
                     continue
                 
-                print(f"[INFO] 到期: {expiry_date.strftime('%Y-%m-%d')} | 剩余: {days_left} 天")
+                if days_left is None and expiry_date:
+                    days_left = (expiry_date - datetime.utcnow()).days
+                
+                print(f"[INFO] 到期: {expiry_date.strftime('%Y-%m-%d') if expiry_date else 'N/A'} | 剩余: {days_left} 天")
                 
                 # 判断是否需要续订
                 need_renew = days_left <= RENEW_THRESHOLD_DAYS or force_renew
@@ -396,7 +532,12 @@ def main():
                     "button:has-text('Renew')",
                     "a:has-text('Renew')",
                     "button:has-text('Extend')",
+                    "a:has-text('Extend')",
+                    "button:has-text('续订')",
+                    "button:has-text('续期')",
                     "[class*='renew']",
+                    "button.btn-success",
+                    "button.btn-primary:has-text('Renew')",
                 ]
                 
                 for selector in btn_selectors:
@@ -410,7 +551,7 @@ def main():
                 
                 if not renew_btn:
                     print("[ERROR] 未找到续订按钮")
-                    sp = screenshot(f"04-no-btn-{server_id}")
+                    sp = screenshot(f"05-no-btn-{server_id}")
                     page.screenshot(path=sp, full_page=True)
                     results.append(f"❌ {server_name}: 未找到续订按钮")
                     continue
@@ -428,7 +569,9 @@ def main():
                     "button:has-text('Confirm')",
                     "button:has-text('Yes')",
                     "button:has-text('OK')",
+                    "button:has-text('确认')",
                     ".modal button.btn-primary",
+                    ".swal2-confirm",
                 ]
                 
                 for selector in confirm_selectors:
@@ -448,40 +591,30 @@ def main():
                 sp_after = screenshot(f"06-after-{server_id}")
                 page.screenshot(path=sp_after, full_page=True)
                 
-                # 验证结果
-                page.reload(wait_until="networkidle")
-                page.wait_for_timeout(2000)
+                # 检查是否有成功提示
+                success_indicators = ["success", "renewed", "extended", "成功"]
+                page_text_after = page.content().lower()
                 
-                new_page_text = page.content()
-                new_expiry = None
-                new_days = None
+                is_success = any(ind in page_text_after for ind in success_indicators)
                 
-                for pattern in patterns:
-                    match = re.search(pattern, new_page_text, re.IGNORECASE)
-                    if match:
-                        new_expiry_str = match.group(1)
-                        new_expiry = datetime.strptime(new_expiry_str, "%Y-%m-%d")
-                        new_days = (new_expiry - datetime.utcnow()).days
-                        break
-                
-                if new_expiry and new_days > days_left:
-                    print(f"[INFO] ✅ 续订成功！新到期: {new_expiry.strftime('%Y-%m-%d')}")
-                    results.append(f"🎉 {server_name}: 续订成功，{new_expiry.strftime('%Y-%m-%d')}")
+                if is_success:
+                    print(f"[INFO] ✅ 续订成功！")
+                    results.append(f"🎉 {server_name}: 续订成功")
                     
                     notify_telegram(
                         ok=True,
                         stage=f"续订成功 - {server_name}",
-                        msg=f"新到期: {new_expiry.strftime('%Y-%m-%d')}",
+                        msg="续订操作已完成",
                         screenshot_path=sp_after
                     )
                 else:
-                    print("[WARN] 续订状态未知")
+                    print("[WARN] 续订状态未知，请检查截图")
                     results.append(f"⚠️ {server_name}: 续订状态未知")
                     
                     notify_telegram(
                         ok=False,
                         stage=f"续订未知 - {server_name}",
-                        msg="请检查截图",
+                        msg="请检查截图确认状态",
                         screenshot_path=sp_after
                     )
             
@@ -499,6 +632,8 @@ def main():
             
         except Exception as e:
             print(f"[ERROR] {e}")
+            import traceback
+            traceback.print_exc()
             
             sp = screenshot("99-error")
             try:
@@ -518,8 +653,6 @@ def main():
             context.close()
             browser.close()
 
-
-# ==================== 入口 ====================
 
 if __name__ == "__main__":
     main()
