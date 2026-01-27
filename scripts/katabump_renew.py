@@ -20,7 +20,7 @@ except ImportError as e:
 # ==================== 配置 ====================
 
 BASE_URL = "https://katabump.com"
-RENEW_THRESHOLD_DAYS = 2
+RENEW_THRESHOLD_DAYS = 1
 
 # ==================== 工具函数 ====================
 
