@@ -36,52 +36,72 @@ jobs:
         env:
           HY2_URL: ${{ secrets.HY2_URL }}
         run: |
+          # 鲁棒的 URL 解析逻辑
           URL_BODY="${HY2_URL#hysteria2://}"
           URL_BODY="${URL_BODY%%#*}"
           PASSWORD="${URL_BODY%%@*}"
           SERVER_PART="${URL_BODY#*@}"
           SERVER="${SERVER_PART%%\?*}"
           PARAMS="${SERVER_PART#*\?}"
+          
           get_param() { echo "$PARAMS" | tr '&' '\n' | grep "^$1=" | cut -d'=' -f2; }
+          
           SNI=$(get_param "sni")
           INSECURE=$(get_param "insecure")
           [ -z "$SNI" ] && SNI="${SERVER%%:*}"
           [ "$INSECURE" = "1" ] && INSECURE="true" || INSECURE="false"
+          
           cat > hy2-config.yaml << EOF
-          server: ${SERVER}
-          auth: ${PASSWORD}
-          tls:
-            sni: ${SNI}
-            insecure: ${INSECURE}
-          socks5:
-            listen: 127.0.0.1:1080
-          http:
-            listen: 127.0.0.1:8080
-          EOF
+server: ${SERVER}
+auth: ${PASSWORD}
+tls:
+  sni: ${SNI}
+  insecure: ${INSECURE}
+http:
+  listen: 127.0.0.1:8080
+EOF
 
-      - name: 启动代理
+      - name: 启动并校验代理
         run: |
-          ./hysteria client -c hy2-config.yaml > /dev/null 2>&1 &
-          sleep 3
-          echo "✅ 代理已启动"
+          # 启动代理并将日志记录到文件
+          ./hysteria client -c hy2-config.yaml > hy2.log 2>&1 &
+          
+          echo "⏳ 等待代理初始化..."
+          sleep 8
+          
+          # 1. 检查进程
+          if ! ps aux | grep -v grep | grep "hysteria" > /dev/null; then
+            echo "❌ Hysteria 进程未能启动，日志："
+            cat hy2.log
+            exit 1
+          fi
+          
+          # 2. 检查网络连通性 (测试访问目标网站)
+          echo "🌐 测试代理连通性..."
+          if curl -x http://127.0.0.1:8080 -I https://dashboard.katabump.com --connect-timeout 10 > /dev/null 2>&1; then
+            echo "✅ 代理连接成功！"
+          else
+            echo "❌ 代理无法访问目标网站，请检查节点可用性或服务器防火墙"
+            cat hy2.log
+            exit 1
+          fi
 
       - name: 运行续订
         env:
-          KATA_COOKIES: ${{ secrets.KATA_COOKIES }}
           KATA_USERNAME: ${{ secrets.KATA_EMAIL }}
           KATA_PASSWORD: ${{ secrets.KATA_PASSWORD }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          FORCE_RENEW: ${{ github.event.inputs.force_renew || 'false' }}
           PROXY_SERVER: "http://127.0.0.1:8080"
+          FORCE_RENEW: ${{ github.event.inputs.force_renew || 'false' }}
         run: python scripts/katabump_renew.py
 
-      - name: 上传截图
+      - name: 上传调试信息
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: screenshots
-          path: "*.png"
-          retention-days: 7
+          name: debug-info
+          path: |
+            *.png
+            hy2.log
+          retention-days: 3
