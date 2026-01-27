@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-KataBump 自动续订 - API + Playwright 版本
+KataBump 自动续订 - 最终版
 """
 
 import os
 import sys
 import re
-import json
 from datetime import datetime
 from pathlib import Path
 
@@ -21,12 +20,10 @@ except ImportError as e:
 BASE_URL = "https://dashboard.katabump.com"
 LOGIN_URL = f"{BASE_URL}/auth/login"
 DASHBOARD_URL = f"{BASE_URL}/dashboard"
-RENEW_THRESHOLD_DAYS = 2
 
 # ==================== 工具函数 ====================
 
 def notify_telegram(ok: bool, stage: str, msg: str = "", screenshot_path: str = ""):
-    """发送 Telegram 通知"""
     try:
         import urllib.request
         import urllib.parse
@@ -37,12 +34,12 @@ def notify_telegram(ok: bool, stage: str, msg: str = "", screenshot_path: str = 
             return
         
         status = "✅ 成功" if ok else "❌ 失败"
-        text = "\n".join([
+        text = "\n".join(filter(None, [
             f"🔔 KataBump：{status}",
             f"阶段：{stage}",
             f"信息：{msg}" if msg else "",
             f"时间：{datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
-        ])
+        ]))
         
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
@@ -73,8 +70,13 @@ def send_telegram_photo(token, chat_id, photo_path, caption):
         pass
 
 
-def screenshot(name: str) -> str:
-    return f"./{name}.png"
+def screenshot(page, name: str) -> str:
+    path = f"./{name}.png"
+    try:
+        page.screenshot(path=path, full_page=True)
+    except:
+        pass
+    return path
 
 
 # ==================== 主函数 ====================
@@ -83,7 +85,6 @@ def main():
     username = os.environ.get("KATA_USERNAME", "")
     password = os.environ.get("KATA_PASSWORD", "")
     proxy_server = os.environ.get("PROXY_SERVER", "")
-    force_renew = os.environ.get("FORCE_RENEW", "false").lower() == "true"
     
     if not username or not password:
         print("[ERROR] 请设置 KATA_USERNAME 和 KATA_PASSWORD")
@@ -91,7 +92,6 @@ def main():
     
     print("[INFO] 启动浏览器...")
     
-    # 存储 API 响应
     servers_data = []
     
     with sync_playwright() as p:
@@ -111,10 +111,9 @@ def main():
         context = browser.new_context(**context_options)
         page = context.new_page()
         
-        # 隐藏 webdriver
         page.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => false });")
         
-        # ========== 拦截 API 响应 ==========
+        # 拦截 API 响应
         def handle_response(response):
             nonlocal servers_data
             if "api-client/list-servers" in response.url:
@@ -131,8 +130,8 @@ def main():
         try:
             # ========== 1. 登录 ==========
             print("[INFO] 访问登录页...")
-            page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
-            page.wait_for_timeout(2000)
+            page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(3000)
             
             if "/auth/login" in page.url:
                 print("[INFO] 执行登录...")
@@ -143,38 +142,30 @@ def main():
                 page.wait_for_timeout(300)
                 
                 page.locator("button[type='submit']").click()
-                page.wait_for_load_state("networkidle", timeout=30000)
-                page.wait_for_timeout(3000)
+                page.wait_for_timeout(5000)
                 
                 if "/auth/login" in page.url:
                     print("[ERROR] ❌ 登录失败")
-                    sp = screenshot("01-login-failed")
-                    page.screenshot(path=sp, full_page=True)
+                    sp = screenshot(page, "01-login-failed")
                     notify_telegram(ok=False, stage="登录失败", screenshot_path=sp)
                     sys.exit(1)
                 
                 print("[INFO] ✅ 登录成功")
             
-            # ========== 2. 访问 Dashboard 触发 API ==========
+            # ========== 2. 访问 Dashboard ==========
             print("[INFO] 访问 Dashboard...")
-            page.goto(DASHBOARD_URL, wait_until="networkidle", timeout=30000)
-            page.wait_for_timeout(3000)  # 等待 API 请求完成
+            page.goto(DASHBOARD_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(5000)
             
-            sp_dashboard = screenshot("02-dashboard")
-            page.screenshot(path=sp_dashboard, full_page=True)
+            screenshot(page, "02-dashboard")
             
-            # ========== 3. 检查服务器列表 ==========
             if not servers_data:
-                print("[WARN] ⚠️ 未拦截到服务器数据，尝试手动请求...")
-                
-                # 手动请求 API
                 api_result = page.evaluate("""
                     async () => {
                         const res = await fetch('/api-client/list-servers', { credentials: 'include' });
                         return res.ok ? await res.json() : null;
                     }
                 """)
-                
                 if api_result and isinstance(api_result, list):
                     servers_data = api_result
             
@@ -185,9 +176,9 @@ def main():
             
             print(f"\n[INFO] 找到 {len(servers_data)} 个服务器:")
             for s in servers_data:
-                print(f"[INFO]   📦 {s['name']} (ID: {s['id']}) - {s.get('location', 'N/A')}")
+                print(f"[INFO]   📦 {s['name']} (ID: {s['id']})")
             
-            # ========== 4. 处理每个服务器 ==========
+            # ========== 3. 处理每个服务器 ==========
             results = []
             
             for server in servers_data:
@@ -198,117 +189,202 @@ def main():
                 
                 # 访问服务器详情页
                 detail_url = f"{BASE_URL}/servers/edit?id={server_id}"
-                page.goto(detail_url, wait_until="networkidle", timeout=30000)
-                page.wait_for_timeout(2000)
+                print(f"[INFO] 访问: {detail_url}")
                 
-                sp_detail = screenshot(f"03-server-{server_id}")
-                page.screenshot(path=sp_detail, full_page=True)
+                try:
+                    page.goto(detail_url, wait_until="domcontentloaded", timeout=60000)
+                    page.wait_for_timeout(3000)
+                except Exception as e:
+                    print(f"[WARN] 页面加载: {e}")
                 
-                # 获取页面文本
-                page_text = page.inner_text("body")
+                screenshot(page, f"03-server-{server_id}")
                 
-                # 查找剩余天数
-                days_left = None
-                patterns = [
-                    r"(\d+)\s*days?\s*(?:left|remaining)",
-                    r"expires?\s*(?:in)?\s*(\d+)\s*days?",
-                    r"renew\s*(?:in|every)?\s*(\d+)\s*days?",
-                    r"(\d+)\s*days?\s*(?:until|before)",
+                # ========== 步骤1: 点击底部 Renew 按钮 ==========
+                print("[INFO] 步骤1: 查找底部 Renew 按钮...")
+                
+                # 底部的 Renew 按钮（在 Delete server 旁边）
+                bottom_renew_btn = None
+                
+                # 尝试多种选择器
+                selectors = [
+                    "button:has-text('Renew'):near(:has-text('Delete server'))",
+                    "button.btn-info:has-text('Renew')",
+                    "button.btn-primary:has-text('Renew')",
+                    "a.btn:has-text('Renew')",
                 ]
                 
-                for pattern in patterns:
-                    match = re.search(pattern, page_text, re.IGNORECASE)
-                    if match:
-                        days_left = int(match.group(1))
+                for sel in selectors:
+                    try:
+                        loc = page.locator(sel)
+                        if loc.count() > 0:
+                            bottom_renew_btn = loc.first
+                            print(f"[INFO] 找到按钮: {sel}")
+                            break
+                    except:
+                        continue
+                
+                # 如果上面的选择器都不行，用更通用的方式
+                if not bottom_renew_btn:
+                    # 找所有包含 Renew 文字的按钮
+                    all_renew = page.locator("button:has-text('Renew'), a:has-text('Renew')").all()
+                    if all_renew:
+                        # 取第一个（底部的）
+                        bottom_renew_btn = all_renew[0]
+                        print(f"[INFO] 找到 {len(all_renew)} 个 Renew 按钮，使用第一个")
+                
+                if not bottom_renew_btn:
+                    print("[ERROR] 未找到底部 Renew 按钮")
+                    results.append(f"❌ {server_name}: 未找到 Renew 按钮")
+                    continue
+                
+                # 点击底部 Renew 按钮
+                print("[INFO] 点击底部 Renew 按钮...")
+                bottom_renew_btn.click()
+                page.wait_for_timeout(2000)
+                
+                screenshot(page, f"04-dialog-{server_id}")
+                
+                # ========== 步骤2: 等待 Cloudflare Turnstile 验证 ==========
+                print("[INFO] 步骤2: 等待 Cloudflare 验证...")
+                
+                # 等待验证通过（最多30秒）
+                max_wait = 30
+                verified = False
+                
+                for i in range(max_wait):
+                    page_text = page.inner_text("body")
+                    
+                    # 检查是否显示 "成功!" 或验证通过的标志
+                    if "成功" in page_text or "Success" in page_text:
+                        print(f"[INFO] ✅ Cloudflare 验证通过！")
+                        verified = True
                         break
+                    
+                    # 检查是否有绿色勾选标志
+                    try:
+                        # Turnstile 验证成功后会有特定的 class 或属性
+                        if page.locator("[data-state='solved']").count() > 0:
+                            print(f"[INFO] ✅ Cloudflare 验证通过！")
+                            verified = True
+                            break
+                    except:
+                        pass
+                    
+                    if i % 5 == 0:
+                        print(f"[INFO] 等待验证... ({i}/{max_wait}秒)")
+                    
+                    page.wait_for_timeout(1000)
                 
-                if days_left is None:
-                    print("[WARN] 无法获取到期时间")
-                    print("[DEBUG] 页面关键词:")
-                    for line in page_text.split("\n"):
-                        if any(kw in line.lower() for kw in ["day", "expir", "renew"]):
-                            print(f"[DEBUG]   {line.strip()[:60]}")
-                    results.append(f"⚠️ {server_name}: 无法获取状态")
+                if not verified:
+                    # 再检查一次对话框中是否有 Renew 按钮可点击
+                    dialog_renew = page.locator(".modal button:has-text('Renew'), .modal-content button:has-text('Renew'), div[role='dialog'] button:has-text('Renew')")
+                    if dialog_renew.count() > 0:
+                        print("[INFO] 对话框中找到 Renew 按钮，继续...")
+                        verified = True
+                    else:
+                        print("[WARN] ⚠️ Cloudflare 验证超时")
+                        sp = screenshot(page, f"05-cf-timeout-{server_id}")
+                        results.append(f"⚠️ {server_name}: CF 验证超时")
+                        notify_telegram(ok=False, stage=f"CF 验证超时 - {server_name}", screenshot_path=sp)
+                        continue
+                
+                screenshot(page, f"05-verified-{server_id}")
+                
+                # ========== 步骤3: 点击对话框中的 Renew 按钮 ==========
+                print("[INFO] 步骤3: 点击对话框中的 Renew 按钮...")
+                
+                page.wait_for_timeout(1000)
+                
+                # 对话框中的 Renew 按钮（蓝色，在 Close 旁边）
+                dialog_renew_btn = None
+                
+                dialog_selectors = [
+                    ".modal button.btn-primary:has-text('Renew')",
+                    ".modal-content button:has-text('Renew')",
+                    ".modal-footer button:has-text('Renew')",
+                    "div[role='dialog'] button:has-text('Renew')",
+                    ".modal button:has-text('Renew')",
+                    # 更通用的：找 Close 按钮旁边的 Renew
+                    "button:has-text('Renew'):right-of(button:has-text('Close'))",
+                ]
+                
+                for sel in dialog_selectors:
+                    try:
+                        loc = page.locator(sel)
+                        if loc.count() > 0:
+                            dialog_renew_btn = loc.first
+                            print(f"[INFO] 找到对话框按钮: {sel}")
+                            break
+                    except:
+                        continue
+                
+                # 如果还是找不到，找所有 Renew 按钮，取最后一个（对话框中的）
+                if not dialog_renew_btn:
+                    all_renew = page.locator("button:has-text('Renew')").all()
+                    if len(all_renew) >= 2:
+                        dialog_renew_btn = all_renew[-1]  # 最后一个是对话框中的
+                        print(f"[INFO] 使用第 {len(all_renew)} 个 Renew 按钮")
+                    elif len(all_renew) == 1:
+                        dialog_renew_btn = all_renew[0]
+                        print("[INFO] 只找到1个 Renew 按钮")
+                
+                if not dialog_renew_btn:
+                    print("[ERROR] 未找到对话框中的 Renew 按钮")
+                    sp = screenshot(page, f"06-no-dialog-btn-{server_id}")
+                    results.append(f"❌ {server_name}: 未找到对话框 Renew 按钮")
                     continue
                 
-                print(f"[INFO] 剩余: {days_left} 天")
-                
-                # 判断是否需要续订
-                need_renew = days_left <= RENEW_THRESHOLD_DAYS or force_renew
-                
-                if not need_renew:
-                    print("[INFO] ✅ 无需续订")
-                    results.append(f"✅ {server_name}: {days_left}天后到期")
-                    continue
-                
-                # ========== 5. 执行续订 ==========
-                reason = "强制续订" if force_renew else f"剩余{days_left}天"
-                print(f"[INFO] 开始续订 ({reason})...")
-                
-                # 查找续订按钮
-                renew_btn = None
-                for selector in ["button:has-text('Renew')", "a:has-text('Renew')", "button:has-text('Extend')"]:
-                    if page.locator(selector).count() > 0:
-                        renew_btn = page.locator(selector).first
-                        print(f"[INFO] 找到按钮: {selector}")
-                        break
-                
-                if not renew_btn:
-                    print("[ERROR] 未找到续订按钮")
-                    results.append(f"❌ {server_name}: 未找到续订按钮")
-                    continue
-                
-                # 点击续订
-                renew_btn.click()
+                # 点击对话框中的 Renew 按钮
+                print("[INFO] 点击对话框 Renew 按钮...")
+                dialog_renew_btn.click()
                 page.wait_for_timeout(3000)
                 
-                # 检查 CF 验证
-                if "turnstile" in page.content().lower():
-                    print("[WARN] ⚠️ 遇到 Cloudflare 验证")
-                    sp_cf = screenshot(f"04-cf-{server_id}")
-                    page.screenshot(path=sp_cf, full_page=True)
-                    results.append(f"⚠️ {server_name}: CF 验证")
-                    notify_telegram(ok=False, stage=f"CF 验证 - {server_name}", screenshot_path=sp_cf)
-                    continue
+                # ========== 检查结果 ==========
+                screenshot(page, f"07-result-{server_id}")
                 
-                # 确认对话框
-                for sel in ["button:has-text('Confirm')", "button:has-text('Yes')", ".swal2-confirm"]:
-                    if page.locator(sel).count() > 0:
-                        page.locator(sel).first.click()
-                        page.wait_for_timeout(2000)
-                        break
+                result_text = page.inner_text("body").lower()
                 
-                page.wait_for_timeout(3000)
-                
-                sp_after = screenshot(f"05-after-{server_id}")
-                page.screenshot(path=sp_after, full_page=True)
-                
-                # 检查结果
-                if any(kw in page.inner_text("body").lower() for kw in ["success", "renewed", "extended"]):
-                    print("[INFO] ✅ 续订成功！")
+                # 检查成功标志
+                success_keywords = ["success", "renewed", "extended", "successfully", "续订成功"]
+                if any(kw in result_text for kw in success_keywords):
+                    print("[INFO] 🎉 续订成功！")
                     results.append(f"🎉 {server_name}: 续订成功")
-                    notify_telegram(ok=True, stage=f"续订成功 - {server_name}", screenshot_path=sp_after)
+                    sp = screenshot(page, f"08-success-{server_id}")
+                    notify_telegram(ok=True, stage=f"续订成功 - {server_name}", screenshot_path=sp)
+                elif "error" in result_text or "failed" in result_text:
+                    print("[ERROR] ❌ 续订失败")
+                    results.append(f"❌ {server_name}: 续订失败")
+                    sp = screenshot(page, f"08-failed-{server_id}")
+                    notify_telegram(ok=False, stage=f"续订失败 - {server_name}", screenshot_path=sp)
                 else:
-                    print("[WARN] 状态未知")
-                    results.append(f"⚠️ {server_name}: 状态未知")
+                    # 检查对话框是否关闭（说明操作完成）
+                    if page.locator(".modal:visible").count() == 0:
+                        print("[INFO] ✅ 对话框已关闭，续订可能成功")
+                        results.append(f"✅ {server_name}: 续订完成")
+                        sp = screenshot(page, f"08-done-{server_id}")
+                        notify_telegram(ok=True, stage=f"续订完成 - {server_name}", screenshot_path=sp)
+                    else:
+                        print("[WARN] ⚠️ 状态未知")
+                        results.append(f"⚠️ {server_name}: 状态未知")
             
-            # ========== 6. 汇总 ==========
+            # ========== 汇总 ==========
             print("\n" + "=" * 50)
+            print("[INFO] 执行结果:")
             summary = "\n".join(results) if results else "无服务器"
             print(summary)
-            notify_telegram(ok=True, stage="完成", msg=summary)
+            
+            notify_telegram(ok=True, stage="执行完成", msg=summary)
+            print("\n[INFO] 🏁 完成")
             
         except Exception as e:
             print(f"[ERROR] {e}")
             import traceback
             traceback.print_exc()
-            sp = screenshot("99-error")
-            try:
-                page.screenshot(path=sp, full_page=True)
-            except:
-                pass
+            
+            sp = screenshot(page, "99-error")
             notify_telegram(ok=False, stage="异常", msg=str(e), screenshot_path=sp if Path(sp).exists() else "")
             sys.exit(1)
+            
         finally:
             context.close()
             browser.close()
