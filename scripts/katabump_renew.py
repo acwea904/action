@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
 KataBump 自动续订 - Playwright 版本
-使用账号密码登录（登录页无 CF 验证）
 """
 
 import os
 import sys
-import json
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse, parse_qs
 
 try:
     from playwright.sync_api import sync_playwright
@@ -21,6 +20,7 @@ except ImportError as e:
 
 BASE_URL = "https://dashboard.katabump.com"
 LOGIN_URL = f"{BASE_URL}/auth/login"
+SERVERS_URL = f"{BASE_URL}/servers"
 RENEW_THRESHOLD_DAYS = 2
 
 # ==================== 工具函数 ====================
@@ -100,7 +100,6 @@ def screenshot(name: str) -> str:
 # ==================== 主函数 ====================
 
 def main():
-    # 获取账号密码
     username = os.environ.get("KATA_USERNAME", "")
     password = os.environ.get("KATA_PASSWORD", "")
     proxy_server = os.environ.get("PROXY_SERVER", "")
@@ -138,213 +137,118 @@ def main():
         context = browser.new_context(**context_options)
         page = context.new_page()
         
-        # 反检测
         page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
         """)
         
         try:
-            # ========== 1. 访问登录页 ==========
+            # ========== 1. 登录 ==========
             print("[INFO] 访问登录页...")
             page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
             page.wait_for_timeout(2000)
             
             print(f"[INFO] URL: {page.url}")
-            print(f"[INFO] Title: {page.title()}")
             
-            sp_login = screenshot("01-login-page")
-            page.screenshot(path=sp_login, full_page=True)
-            
-            # ========== 2. 检查是否已登录 ==========
-            if "/auth/login" not in page.url:
-                print("[INFO] ✅ 已登录（可能有有效 session）")
-            else:
-                # ========== 3. 执行登录 ==========
+            if "/auth/login" in page.url:
                 print("[INFO] 执行登录...")
                 
-                # 查找并填写用户名/邮箱
-                email_selectors = [
-                    "input[name='email']",
-                    "input[type='email']",
-                    "input[name='username']",
-                    "input[placeholder*='mail']",
-                    "input[placeholder*='user']",
-                ]
-                
-                email_input = None
-                for selector in email_selectors:
-                    if page.locator(selector).count() > 0:
-                        email_input = page.locator(selector).first
-                        print(f"[INFO] 找到邮箱输入框: {selector}")
-                        break
-                
-                if not email_input:
-                    print("[ERROR] 未找到邮箱输入框")
-                    sys.exit(1)
-                
-                # 查找密码输入框
-                password_selectors = [
-                    "input[name='password']",
-                    "input[type='password']",
-                ]
-                
-                password_input = None
-                for selector in password_selectors:
-                    if page.locator(selector).count() > 0:
-                        password_input = page.locator(selector).first
-                        print(f"[INFO] 找到密码输入框: {selector}")
-                        break
-                
-                if not password_input:
-                    print("[ERROR] 未找到密码输入框")
-                    sys.exit(1)
-                
-                # 填写表单
-                email_input.click()
+                page.locator("input[name='email']").fill(username)
                 page.wait_for_timeout(300)
-                email_input.fill(username)
-                
-                page.wait_for_timeout(500)
-                
-                password_input.click()
+                page.locator("input[name='password']").fill(password)
                 page.wait_for_timeout(300)
-                password_input.fill(password)
                 
-                page.wait_for_timeout(500)
-                
-                sp_filled = screenshot("02-form-filled")
-                page.screenshot(path=sp_filled, full_page=True)
-                
-                # 查找登录按钮
-                login_btn_selectors = [
-                    "button[type='submit']",
-                    "button:has-text('Login')",
-                    "button:has-text('Sign in')",
-                    "button:has-text('Log in')",
-                    "input[type='submit']",
-                ]
-                
-                login_btn = None
-                for selector in login_btn_selectors:
-                    if page.locator(selector).count() > 0:
-                        login_btn = page.locator(selector).first
-                        print(f"[INFO] 找到登录按钮: {selector}")
-                        break
-                
-                if not login_btn:
-                    print("[ERROR] 未找到登录按钮")
-                    sys.exit(1)
-                
-                # 点击登录
-                print("[INFO] 点击登录...")
-                login_btn.click()
-                
-                # 等待登录完成
+                page.locator("button[type='submit']").click()
                 page.wait_for_load_state("networkidle", timeout=30000)
                 page.wait_for_timeout(3000)
                 
                 print(f"[INFO] 登录后 URL: {page.url}")
                 
-                sp_after_login = screenshot("03-after-login")
-                page.screenshot(path=sp_after_login, full_page=True)
-                
-                # 检查登录是否成功
                 if "/auth/login" in page.url:
-                    print("[ERROR] ❌ 登录失败，请检查账号密码")
-                    
-                    # 检查错误信息
-                    error_text = page.locator(".error, .alert-danger, [class*='error']").first
-                    if error_text.count() > 0:
-                        print(f"[ERROR] 错误信息: {error_text.inner_text()}")
-                    
-                    notify_telegram(
-                        ok=False,
-                        stage="登录失败",
-                        msg="账号密码错误或登录被拒绝",
-                        screenshot_path=sp_after_login
-                    )
+                    print("[ERROR] ❌ 登录失败")
+                    sp = screenshot("01-login-failed")
+                    page.screenshot(path=sp, full_page=True)
+                    notify_telegram(ok=False, stage="登录失败", screenshot_path=sp)
                     sys.exit(1)
                 
                 print("[INFO] ✅ 登录成功")
             
-            # ========== 4. 访问 Dashboard ==========
-            print("[INFO] 访问 Dashboard...")
-            page.goto(BASE_URL, wait_until="networkidle", timeout=30000)
+            # ========== 2. 访问服务器列表页 ==========
+            print("[INFO] 访问服务器列表...")
+            page.goto(SERVERS_URL, wait_until="networkidle", timeout=30000)
             page.wait_for_timeout(2000)
             
-            sp_dashboard = screenshot("04-dashboard")
-            page.screenshot(path=sp_dashboard, full_page=True)
+            print(f"[INFO] URL: {page.url}")
             
-            print(f"[INFO] Dashboard URL: {page.url}")
+            sp_servers = screenshot("02-servers-page")
+            page.screenshot(path=sp_servers, full_page=True)
             
-            # ========== 5. 获取服务器列表 ==========
-            print("[INFO] 获取服务器列表...")
-            
-            # 打印调试信息
-            all_links = page.locator("a[href]").all()
-            print(f"[DEBUG] 页面共有 {len(all_links)} 个链接")
+            # ========== 3. 解析服务器表格 ==========
+            print("[INFO] 解析服务器列表...")
             
             servers = []
             
-            # 尝试多种选择器
-            server_selectors = [
-                "a[href*='/server/']",
-                "a[href*='/servers/']",
-                "a[href*='/bot/']",
-                "a[href*='/bots/']",
-                "a[href*='/panel/']",
-            ]
+            # 方法1: 从表格行解析
+            rows = page.locator("table tbody tr").all()
+            print(f"[DEBUG] 找到 {len(rows)} 个表格行")
             
-            for selector in server_selectors:
+            for row in rows:
                 try:
-                    links = page.locator(selector).all()
-                    if links:
-                        print(f"[DEBUG] 选择器 {selector}: 找到 {len(links)} 个")
+                    # 获取 ID（第一列）
+                    server_id = row.locator("td").nth(0).inner_text().strip()
                     
-                    for link in links:
-                        href = link.get_attribute("href") or ""
-                        match = re.search(r"/(server|bot|panel)[s]?/([a-zA-Z0-9]+)", href)
-                        if match:
-                            server_id = match.group(2)
-                            name = link.inner_text().strip()[:30] or f"Server-{server_id}"
-                            if server_id not in [s["id"] for s in servers]:
-                                servers.append({
-                                    "id": server_id,
-                                    "name": name,
-                                    "href": href
-                                })
+                    # 获取名称（第二列）
+                    server_name = row.locator("td").nth(1).inner_text().strip()
+                    
+                    # 获取链接
+                    link = row.locator("a[href*='edit']").first
+                    href = link.get_attribute("href") if link.count() > 0 else ""
+                    
+                    if server_id and server_id.isdigit():
+                        servers.append({
+                            "id": server_id,
+                            "name": server_name or f"Server-{server_id}",
+                            "href": href or f"/servers/edit?id={server_id}"
+                        })
+                        print(f"[DEBUG] 找到服务器: ID={server_id}, Name={server_name}")
                 except Exception as e:
-                    print(f"[DEBUG] 选择器出错: {e}")
+                    print(f"[DEBUG] 解析行出错: {e}")
+                    continue
             
-            # 调试：打印所有链接
+            # 方法2: 从链接解析（备用）
             if not servers:
-                print("[DEBUG] 未找到服务器，打印所有链接:")
-                for link in all_links[:20]:
+                print("[DEBUG] 尝试从链接解析...")
+                links = page.locator("a[href*='edit?id=']").all()
+                
+                for link in links:
                     href = link.get_attribute("href") or ""
-                    text = link.inner_text().strip()[:40]
-                    if href and not href.startswith("#") and not href.startswith("javascript"):
-                        print(f"[DEBUG]   {href} -> {text}")
-                
-                # 保存 HTML
-                Path("page.html").write_text(page.content())
-                print("[DEBUG] 页面 HTML 已保存到 page.html")
+                    
+                    # 解析 ?id=xxx
+                    parsed = urlparse(href)
+                    params = parse_qs(parsed.query)
+                    
+                    if "id" in params:
+                        server_id = params["id"][0]
+                        server_name = link.inner_text().strip() or f"Server-{server_id}"
+                        
+                        if server_id not in [s["id"] for s in servers]:
+                            servers.append({
+                                "id": server_id,
+                                "name": server_name,
+                                "href": href
+                            })
             
+            # ========== 4. 检查结果 ==========
             if not servers:
-                print("[WARN] 未找到服务器，尝试发送通知并退出")
-                
-                notify_telegram(
-                    ok=False,
-                    stage="获取服务器",
-                    msg="未找到服务器，请检查截图",
-                    screenshot_path=sp_dashboard
-                )
-                sys.exit(1)
+                print("[WARN] ⚠️ 未找到任何服务器")
+                Path("page.html").write_text(page.content())
+                notify_telegram(ok=False, stage="获取服务器", msg="未找到服务器", screenshot_path=sp_servers)
+                sys.exit(0)
             
-            print(f"[INFO] 找到 {len(servers)} 个服务器")
+            print(f"[INFO] 找到 {len(servers)} 个服务器:")
             for s in servers:
-                print(f"[INFO]   - {s['id']}: {s['name']}")
+                print(f"[INFO]   - ID: {s['id']} | 名称: {s['name']}")
             
-            # ========== 6. 处理每个服务器 ==========
+            # ========== 5. 处理每个服务器 ==========
             results = []
             
             for server in servers:
@@ -354,61 +258,61 @@ def main():
                 
                 print(f"\n[INFO] ━━━ {server_name} (ID: {server_id}) ━━━")
                 
-                # 访问服务器页面
+                # 访问服务器详情页
                 full_url = server_href if server_href.startswith("http") else f"{BASE_URL}{server_href}"
                 page.goto(full_url, wait_until="networkidle", timeout=30000)
                 page.wait_for_timeout(2000)
                 
                 print(f"[INFO] URL: {page.url}")
                 
-                sp_server = screenshot(f"05-server-{server_id}")
-                page.screenshot(path=sp_server, full_page=True)
+                sp_detail = screenshot(f"03-server-{server_id}")
+                page.screenshot(path=sp_detail, full_page=True)
                 
                 # 获取页面文本
-                page_text = page.content()
+                page_text = page.inner_text("body")
                 
-                # 查找到期时间
-                expiry_date = None
+                # 查找到期时间 / 剩余天数
                 days_left = None
                 
+                # 模式匹配
                 patterns = [
-                    r"(\d{4}-\d{2}-\d{2})\s*\(?\s*(\d+)\s*days?\s*(?:left|remaining)",
-                    r"expires?\s*[:\s]*(\d{4}-\d{2}-\d{2})",
-                    r"expiry\s*[:\s]*(\d{4}-\d{2}-\d{2})",
-                    r"valid\s+until\s*[:\s]*(\d{4}-\d{2}-\d{2})",
-                    r"(\d+)\s*days?\s*(?:left|remaining|until)",
-                    r"renew\s+in\s+(\d+)\s*days?",
+                    r"(\d+)\s*days?\s*(?:left|remaining)",
+                    r"expires?\s*(?:in)?\s*(\d+)\s*days?",
+                    r"renew\s*(?:in|every)?\s*(\d+)\s*days?",
+                    r"valid\s*(?:for)?\s*(\d+)\s*days?",
+                    r"(\d+)\s*days?\s*(?:until|before)",
                 ]
                 
                 for pattern in patterns:
                     match = re.search(pattern, page_text, re.IGNORECASE)
                     if match:
-                        groups = match.groups()
-                        
-                        if groups[0] and "-" in groups[0]:
-                            expiry_str = groups[0]
-                            expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d")
+                        days_left = int(match.group(1))
+                        print(f"[DEBUG] 匹配到: {match.group(0)}")
+                        break
+                
+                # 查找日期格式
+                if days_left is None:
+                    date_match = re.search(r"(\d{4}-\d{2}-\d{2})", page_text)
+                    if date_match:
+                        try:
+                            expiry_date = datetime.strptime(date_match.group(1), "%Y-%m-%d")
                             days_left = (expiry_date - datetime.utcnow()).days
-                            
-                            if len(groups) >= 2 and groups[1]:
-                                try:
-                                    days_left = int(groups[1])
-                                except:
-                                    pass
-                        elif groups[0] and groups[0].isdigit():
-                            days_left = int(groups[0])
-                            expiry_date = datetime.utcnow() + timedelta(days=days_left)
-                        
-                        if days_left is not None:
-                            break
+                        except:
+                            pass
                 
                 if days_left is None:
                     print("[WARN] 无法获取到期时间")
+                    
+                    # 打印页面文本帮助调试
+                    print("[DEBUG] 页面文本片段:")
+                    for line in page_text.split("\n"):
+                        if any(kw in line.lower() for kw in ["day", "expir", "renew", "valid"]):
+                            print(f"[DEBUG]   {line.strip()[:80]}")
+                    
                     results.append(f"⚠️ {server_name}: 无法获取状态")
                     continue
                 
-                expiry_str = expiry_date.strftime('%Y-%m-%d') if expiry_date else "N/A"
-                print(f"[INFO] 到期: {expiry_str} | 剩余: {days_left} 天")
+                print(f"[INFO] 剩余: {days_left} 天")
                 
                 # 判断是否需要续订
                 need_renew = days_left <= RENEW_THRESHOLD_DAYS or force_renew
@@ -418,7 +322,7 @@ def main():
                     results.append(f"✅ {server_name}: {days_left}天后到期")
                     continue
                 
-                # ========== 7. 执行续订 ==========
+                # ========== 6. 执行续订 ==========
                 reason = "强制续订" if force_renew else f"剩余{days_left}天"
                 print(f"[INFO] 开始续订 ({reason})...")
                 
@@ -429,7 +333,8 @@ def main():
                     "a:has-text('Renew')",
                     "button:has-text('Extend')",
                     "a:has-text('Extend')",
-                    "[class*='renew']",
+                    "input[value*='Renew']",
+                    "button.btn-success",
                 ]
                 
                 for selector in btn_selectors:
@@ -443,41 +348,37 @@ def main():
                 
                 if not renew_btn:
                     print("[ERROR] 未找到续订按钮")
+                    
+                    # 打印所有按钮帮助调试
+                    buttons = page.locator("button, a.btn, input[type='submit']").all()
+                    print("[DEBUG] 页面按钮:")
+                    for btn in buttons:
+                        text = btn.inner_text().strip()[:30]
+                        print(f"[DEBUG]   {text}")
+                    
                     results.append(f"❌ {server_name}: 未找到续订按钮")
                     continue
                 
-                # 截图 - 续订前
-                sp_before = screenshot(f"06-before-{server_id}")
+                # 点击续订
+                sp_before = screenshot(f"04-before-{server_id}")
                 page.screenshot(path=sp_before, full_page=True)
                 
-                # 点击续订
                 renew_btn.click()
                 page.wait_for_timeout(3000)
                 
-                # 检查是否遇到 CF 验证
-                if "challenge" in page.url or "cf-" in page.content().lower():
+                # 检查 CF 验证
+                page_content = page.content().lower()
+                if "challenge" in page.url or "turnstile" in page_content:
                     print("[WARN] ⚠️ 遇到 Cloudflare 验证")
-                    sp_cf = screenshot(f"07-cf-challenge-{server_id}")
+                    sp_cf = screenshot(f"05-cf-{server_id}")
                     page.screenshot(path=sp_cf, full_page=True)
                     
-                    results.append(f"⚠️ {server_name}: 遇到 CF 验证，需要手动续订")
-                    
-                    notify_telegram(
-                        ok=False,
-                        stage=f"CF 验证 - {server_name}",
-                        msg="续订时遇到 Cloudflare 验证",
-                        screenshot_path=sp_cf
-                    )
+                    results.append(f"⚠️ {server_name}: 遇到 CF 验证")
+                    notify_telegram(ok=False, stage=f"CF 验证 - {server_name}", screenshot_path=sp_cf)
                     continue
                 
                 # 检查确认对话框
-                confirm_selectors = [
-                    "button:has-text('Confirm')",
-                    "button:has-text('Yes')",
-                    "button:has-text('OK')",
-                    ".modal button.btn-primary",
-                    ".swal2-confirm",
-                ]
+                confirm_selectors = ["button:has-text('Confirm')", "button:has-text('Yes')", "button:has-text('OK')", ".swal2-confirm"]
                 
                 for selector in confirm_selectors:
                     try:
@@ -489,50 +390,27 @@ def main():
                     except:
                         continue
                 
-                page.wait_for_load_state("networkidle", timeout=15000)
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(3000)
                 
-                # 截图 - 续订后
-                sp_after = screenshot(f"08-after-{server_id}")
+                sp_after = screenshot(f"06-after-{server_id}")
                 page.screenshot(path=sp_after, full_page=True)
                 
-                # 检查成功提示
-                page_text_after = page.content().lower()
-                success_indicators = ["success", "renewed", "extended", "successfully"]
-                
-                is_success = any(ind in page_text_after for ind in success_indicators)
-                
-                if is_success:
-                    print(f"[INFO] ✅ 续订成功！")
+                # 检查结果
+                result_text = page.inner_text("body").lower()
+                if any(kw in result_text for kw in ["success", "renewed", "extended"]):
+                    print("[INFO] ✅ 续订成功！")
                     results.append(f"🎉 {server_name}: 续订成功")
-                    
-                    notify_telegram(
-                        ok=True,
-                        stage=f"续订成功 - {server_name}",
-                        msg="续订操作已完成",
-                        screenshot_path=sp_after
-                    )
+                    notify_telegram(ok=True, stage=f"续订成功 - {server_name}", screenshot_path=sp_after)
                 else:
                     print("[WARN] 续订状态未知")
-                    results.append(f"⚠️ {server_name}: 续订状态未知")
-                    
-                    notify_telegram(
-                        ok=False,
-                        stage=f"续订未知 - {server_name}",
-                        msg="请检查截图",
-                        screenshot_path=sp_after
-                    )
+                    results.append(f"⚠️ {server_name}: 状态未知")
             
-            # ========== 8. 汇总 ==========
-            print("\n[INFO] " + "=" * 50)
-            print("[INFO] 完成")
+            # ========== 7. 汇总 ==========
+            print("\n" + "=" * 50)
+            summary = "\n".join(results) if results else "无服务器需要处理"
+            print(summary)
             
-            summary = "\n".join(results)
-            print(f"\n{summary}")
-            
-            if results:
-                notify_telegram(ok=True, stage="执行完成", msg=summary)
-            
+            notify_telegram(ok=True, stage="执行完成", msg=summary)
             print("[INFO] 🏁 结束")
             
         except Exception as e:
@@ -546,12 +424,7 @@ def main():
             except:
                 pass
             
-            notify_telegram(
-                ok=False,
-                stage="异常",
-                msg=str(e),
-                screenshot_path=sp if Path(sp).exists() else ""
-            )
+            notify_telegram(ok=False, stage="异常", msg=str(e), screenshot_path=sp if Path(sp).exists() else "")
             sys.exit(1)
             
         finally:
