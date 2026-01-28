@@ -14,7 +14,7 @@ on:
 jobs:
   renew:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: 检出代码
@@ -56,7 +56,7 @@ jobs:
       - name: 安装 Python 依赖
         run: |
           pip install --upgrade pip
-          pip install seleniumbase pyvirtualdisplay pynacl
+          pip install seleniumbase pyvirtualdisplay
           seleniumbase install chromedriver
           seleniumbase install chrome
 
@@ -124,8 +124,6 @@ jobs:
           KATA_PASSWORD: ${{ secrets.KATA_PASSWORD }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
           FORCE_RENEW: ${{ github.event.inputs.force_renew || 'false' }}
           PROXY_SERVER: "http://127.0.0.1:8080"
         run: |
