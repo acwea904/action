@@ -69,31 +69,6 @@ def send_telegram_photo(token: str, chat_id: str, photo_path: str, caption: str)
         print(f"[WARN] 发送图片失败: {e}")
 
 
-def is_linux() -> bool:
-    """检测是否为 Linux 系统"""
-    return platform.system().lower() == "linux"
-
-
-def setup_display():
-    """设置 Linux 虚拟显示"""
-    if is_linux() and not os.environ.get("DISPLAY"):
-        try:
-            from pyvirtualdisplay import Display
-            display = Display(visible=False, size=(1920, 1080))
-            display.start()
-            os.environ["DISPLAY"] = display.new_display_var
-            print("[INFO] Linux: 已启动虚拟显示 (Xvfb)")
-            return display
-        except ImportError:
-            print("[ERROR] 请安装: pip install pyvirtualdisplay")
-            print("[ERROR] 以及: apt-get install -y xvfb")
-            sys.exit(1)
-        except Exception as e:
-            print(f"[ERROR] 启动虚拟显示失败: {e}")
-            sys.exit(1)
-    return None
-
-
 def screenshot(sb, name: str) -> str:
     """保存截图"""
     path = f"./{name}.png"
@@ -105,55 +80,169 @@ def screenshot(sb, name: str) -> str:
     return path
 
 
-def wait_for_cloudflare(sb, timeout: int = 30) -> bool:
+def click_turnstile_checkbox(sb) -> bool:
+    """
+    尝试点击 Turnstile checkbox
+    """
+    try:
+        # 方法1: 使用 uc_click 点击 iframe 内的 checkbox
+        turnstile_selectors = [
+            "iframe[src*='challenges.cloudflare.com']",
+            "iframe[src*='turnstile']",
+            "#cf-turnstile iframe",
+            ".cf-turnstile iframe",
+            "iframe[title*='Cloudflare']",
+        ]
+        
+        for selector in turnstile_selectors:
+            try:
+                if sb.is_element_present(selector):
+                    print(f"[INFO] 找到 Turnstile iframe: {selector}")
+                    # 切换到 iframe
+                    sb.switch_to_frame(selector)
+                    time.sleep(1)
+                    
+                    # 尝试点击 checkbox
+                    checkbox_selectors = [
+                        "input[type='checkbox']",
+                        ".ctp-checkbox-label",
+                        "#challenge-stage",
+                        "body",
+                    ]
+                    
+                    for cb_sel in checkbox_selectors:
+                        try:
+                            if sb.is_element_present(cb_sel):
+                                sb.uc_click(cb_sel)
+                                print(f"[INFO] 点击了: {cb_sel}")
+                                time.sleep(2)
+                                break
+                        except:
+                            pass
+                    
+                    sb.switch_to_default_content()
+                    return True
+            except Exception as e:
+                print(f"[DEBUG] 尝试 {selector} 失败: {e}")
+                try:
+                    sb.switch_to_default_content()
+                except:
+                    pass
+        
+        # 方法2: 使用 JavaScript 直接触发
+        try:
+            result = sb.execute_script("""
+                // 查找 Turnstile iframe
+                const iframes = document.querySelectorAll('iframe');
+                for (const iframe of iframes) {
+                    if (iframe.src && (iframe.src.includes('challenges.cloudflare.com') || iframe.src.includes('turnstile'))) {
+                        // 尝试点击 iframe 中心
+                        const rect = iframe.getBoundingClientRect();
+                        const x = rect.left + rect.width / 2;
+                        const y = rect.top + rect.height / 2;
+                        
+                        // 创建并触发点击事件
+                        const clickEvent = new MouseEvent('click', {
+                            view: window,
+                            bubbles: true,
+                            cancelable: true,
+                            clientX: x,
+                            clientY: y
+                        });
+                        iframe.dispatchEvent(clickEvent);
+                        return 'clicked_iframe';
+                    }
+                }
+                return 'no_iframe';
+            """)
+            print(f"[DEBUG] JS 点击结果: {result}")
+        except Exception as e:
+            print(f"[DEBUG] JS 点击失败: {e}")
+            
+    except Exception as e:
+        print(f"[WARN] 点击 Turnstile 失败: {e}")
+    
+    return False
+
+
+def wait_for_cloudflare(sb, timeout: int = 60) -> bool:
     """
     等待并处理 Cloudflare 验证
-    返回 True 表示验证通过或无需验证
+    使用多种策略绕过
     """
     print("[INFO] 检查 Cloudflare 验证...")
     
     start_time = time.time()
+    attempt = 0
     
     while time.time() - start_time < timeout:
+        attempt += 1
+        
         try:
             page_source = sb.get_page_source().lower()
+            current_url = sb.get_current_url().lower()
             
-            # Cloudflare 验证指标
-            cf_indicators = [
-                "turnstile",
-                "challenges.cloudflare",
-                "just a moment",
-                "verify you are human",
-                "checking your browser",
-                "cf-challenge"
+            # 检查是否已经通过验证
+            success_indicators = [
+                "login" in current_url and "challenge" not in current_url,
+                "dashboard" in current_url,
+                "email" in page_source and "password" in page_source,
+                "sign in" in page_source,
+                "log in" in page_source,
             ]
             
-            # 检查是否有 Cloudflare 验证
-            has_cf = any(indicator in page_source for indicator in cf_indicators)
+            if any(success_indicators):
+                print("[INFO] ✅ Cloudflare 验证通过")
+                return True
             
-            if has_cf:
-                print("[INFO] 检测到 Cloudflare 验证，尝试自动处理...")
-                try:
-                    # 使用 SeleniumBase UC Mode 的自动点击功能
-                    sb.uc_gui_click_captcha()
-                    time.sleep(3)
-                except Exception as e:
-                    print(f"[WARN] 点击验证码: {e}")
-                
-                # 等待一下再检查
-                time.sleep(2)
-            else:
-                # 没有 Cloudflare 验证，检查页面是否正常加载
-                if "login" in page_source or "dashboard" in page_source or "server" in page_source:
-                    print("[INFO] ✅ Cloudflare 验证通过或无需验证")
-                    return True
-                
-                # 检查是否有 cf_clearance cookie
+            # 检查是否有 cf_clearance cookie
+            try:
                 cookies = sb.get_cookies()
                 if any(c.get("name") == "cf_clearance" for c in cookies):
                     print("[INFO] ✅ 已获取 cf_clearance cookie")
+                    time.sleep(2)
                     return True
+            except:
+                pass
             
+            # Cloudflare 验证指标
+            cf_indicators = [
+                "turnstile" in page_source,
+                "challenges.cloudflare" in page_source,
+                "just a moment" in page_source,
+                "verify you are human" in page_source,
+                "checking your browser" in page_source,
+                "cf-challenge" in page_source,
+                "challenge-platform" in current_url,
+            ]
+            
+            if any(cf_indicators):
+                if attempt % 5 == 1:
+                    print(f"[INFO] 检测到 Cloudflare 验证，尝试处理... (尝试 {attempt})")
+                
+                # 策略1: 使用 uc_gui_click_captcha (如果可用)
+                if attempt <= 3:
+                    try:
+                        sb.uc_gui_click_captcha()
+                        time.sleep(3)
+                    except Exception as e:
+                        if attempt == 1:
+                            print(f"[DEBUG] uc_gui_click_captcha 不可用: {e}")
+                
+                # 策略2: 手动点击 Turnstile
+                if attempt % 3 == 0:
+                    click_turnstile_checkbox(sb)
+                    time.sleep(2)
+                
+                # 策略3: 刷新页面重试 (每15秒)
+                if attempt > 0 and attempt % 15 == 0:
+                    print("[INFO] 刷新页面重试...")
+                    try:
+                        sb.uc_open_with_reconnect(sb.get_current_url(), reconnect_time=4)
+                        time.sleep(3)
+                    except:
+                        pass
+                
             time.sleep(1)
             
         except Exception as e:
@@ -179,69 +268,121 @@ def fetch_servers_api(sb) -> List[Dict]:
     return []
 
 
-def click_element_safe(sb, selector: str, description: str = "") -> bool:
-    """安全点击元素"""
-    try:
-        if sb.is_element_visible(selector):
-            sb.click(selector)
-            print(f"[INFO] 点击成功: {description or selector}")
-            return True
-    except Exception as e:
-        print(f"[WARN] 点击失败 ({description or selector}): {e}")
-    return False
-
-
 def find_and_click_renew_button(sb, button_type: str = "bottom") -> bool:
     """
     查找并点击 Renew 按钮
-    button_type: "bottom" (页面底部) 或 "dialog" (对话框中)
     """
-    selectors = []
-    
-    if button_type == "bottom":
-        # 页面底部的 Renew 按钮
-        selectors = [
-            "button.btn-info:contains('Renew')",
-            "button.btn-primary:contains('Renew')",
-            "a.btn:contains('Renew')",
-            "button:contains('Renew')",
-        ]
-    else:
-        # 对话框中的 Renew 按钮
-        selectors = [
-            ".modal button.btn-primary:contains('Renew')",
-            ".modal-content button:contains('Renew')",
-            ".modal-footer button:contains('Renew')",
-            "div[role='dialog'] button:contains('Renew')",
-            ".modal button:contains('Renew')",
-        ]
-    
-    for selector in selectors:
-        try:
-            # 使用 XPath 作为备选
-            xpath_selector = f"//button[contains(text(), 'Renew')]"
-            
-            if sb.is_element_visible(selector):
-                sb.click(selector)
-                print(f"[INFO] 点击 {button_type} Renew 按钮成功")
-                return True
-        except:
-            pass
-    
-    # 尝试 XPath
     try:
         if button_type == "dialog":
-            xpath = "//div[contains(@class, 'modal')]//button[contains(text(), 'Renew')]"
+            # 对话框中的按钮
+            result = sb.execute_script("""
+                const modal = document.querySelector('.modal, [role="dialog"], .modal-content');
+                if (modal) {
+                    const buttons = modal.querySelectorAll('button, a.btn');
+                    for (const btn of buttons) {
+                        const text = btn.textContent.toLowerCase();
+                        if (text.includes('renew') && !text.includes('cancel')) {
+                            btn.scrollIntoView({block: 'center'});
+                            btn.click();
+                            return 'clicked';
+                        }
+                    }
+                }
+                return 'not_found';
+            """)
         else:
-            xpath = "//button[contains(text(), 'Renew')]"
+            # 页面底部的按钮
+            result = sb.execute_script("""
+                const buttons = document.querySelectorAll('button, a.btn');
+                for (const btn of buttons) {
+                    const text = btn.textContent.toLowerCase();
+                    // 排除对话框中的按钮
+                    if (text.includes('renew') && !btn.closest('.modal')) {
+                        btn.scrollIntoView({block: 'center'});
+                        btn.click();
+                        return 'clicked';
+                    }
+                }
+                return 'not_found';
+            """)
         
-        if sb.is_element_visible(xpath):
-            sb.click(xpath)
-            print(f"[INFO] 通过 XPath 点击 {button_type} Renew 按钮成功")
+        if result == 'clicked':
+            print(f"[INFO] 点击 {button_type} Renew 按钮成功")
             return True
-    except:
-        pass
+            
+    except Exception as e:
+        print(f"[WARN] 点击 {button_type} Renew 按钮失败: {e}")
     
+    return False
+
+
+def wait_for_turnstile_in_dialog(sb, timeout: int = 45) -> bool:
+    """
+    等待对话框中的 Turnstile 验证完成
+    """
+    print("[INFO] 等待对话框中的 Turnstile 验证...")
+    
+    start_time = time.time()
+    attempt = 0
+    
+    while time.time() - start_time < timeout:
+        attempt += 1
+        
+        try:
+            # 检查对话框是否存在
+            has_modal = sb.execute_script("""
+                return document.querySelector('.modal, [role="dialog"]') !== null;
+            """)
+            
+            if not has_modal:
+                print("[INFO] 对话框已关闭")
+                return True
+            
+            # 检查是否有 Turnstile
+            has_turnstile = sb.execute_script("""
+                const modal = document.querySelector('.modal, [role="dialog"]');
+                if (!modal) return false;
+                
+                const html = modal.innerHTML.toLowerCase();
+                return html.includes('turnstile') || 
+                       html.includes('cf-turnstile') ||
+                       modal.querySelector('iframe[src*="challenges.cloudflare"]') !== null;
+            """)
+            
+            if has_turnstile:
+                if attempt % 5 == 1:
+                    print(f"[INFO] 对话框中有 Turnstile，等待验证... ({attempt})")
+                
+                # 尝试点击
+                if attempt % 3 == 0:
+                    click_turnstile_checkbox(sb)
+                
+                time.sleep(1)
+            else:
+                # 没有 Turnstile，检查是否可以点击 Renew
+                can_click = sb.execute_script("""
+                    const modal = document.querySelector('.modal, [role="dialog"]');
+                    if (!modal) return false;
+                    
+                    const buttons = modal.querySelectorAll('button');
+                    for (const btn of buttons) {
+                        if (btn.textContent.toLowerCase().includes('renew') && !btn.disabled) {
+                            return true;
+                        }
+                    }
+                    return false;
+                """)
+                
+                if can_click:
+                    print("[INFO] ✅ Turnstile 验证通过，可以点击 Renew")
+                    return True
+                    
+        except Exception as e:
+            print(f"[DEBUG] 检查对话框状态出错: {e}")
+        
+        time.sleep(1)
+    
+    print("[WARN] ⚠️ 对话框 Turnstile 验证超时")
     return False
 
 
@@ -261,27 +402,31 @@ def main():
     print(f"[INFO] 系统: {platform.system()} {platform.release()}")
     print("[INFO] ========================================")
     
-    # Linux 虚拟显示
-    display = setup_display()
-    
     results = []
     
     try:
-        # 导入 SeleniumBase
         from seleniumbase import SB
         
-        # 配置 SeleniumBase 参数
+        # 配置参数
         sb_kwargs = {
-            "uc": True,  # 启用 UC Mode (反检测)
+            "uc": True,
             "test": True,
             "locale": "en",
-            "headless": False if is_linux() else True,  # Linux 使用虚拟显示，不用 headless
+            "headless": False,  # UC Mode 需要非 headless
+            "uc_cdp_events": True,  # 启用 CDP 事件
         }
         
-        # 添加代理
         if proxy_server:
-            print(f"[INFO] 使用代理: {proxy_server}")
-            sb_kwargs["proxy"] = proxy_server
+            # 检查代理是否可用
+            import urllib.request
+            try:
+                proxy_handler = urllib.request.ProxyHandler({'http': proxy_server, 'https': proxy_server})
+                opener = urllib.request.build_opener(proxy_handler)
+                opener.open("http://httpbin.org/ip", timeout=5)
+                print(f"[INFO] 使用代理: {proxy_server}")
+                sb_kwargs["proxy"] = proxy_server
+            except:
+                print(f"[WARN] 代理不可用，直接连接")
         
         with SB(**sb_kwargs) as sb:
             print("[INFO] 浏览器已启动")
@@ -290,11 +435,12 @@ def main():
             print("\n[INFO] ===== 步骤 1: 登录 =====")
             print(f"[INFO] 访问: {LOGIN_URL}")
             
-            sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=5.0)
-            time.sleep(3)
+            # 使用 uc_open_with_reconnect 并增加重连时间
+            sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=6)
+            time.sleep(5)
             
             # 处理 Cloudflare
-            if not wait_for_cloudflare(sb, timeout=30):
+            if not wait_for_cloudflare(sb, timeout=60):
                 sp = screenshot(sb, "01-cf-failed")
                 notify_telegram(ok=False, stage="Cloudflare 验证失败", screenshot_path=sp)
                 sys.exit(1)
@@ -303,24 +449,32 @@ def main():
             
             # 检查是否需要登录
             current_url = sb.get_current_url()
-            if "/auth/login" in current_url:
+            page_source = sb.get_page_source().lower()
+            
+            if "/auth/login" in current_url or ("email" in page_source and "password" in page_source):
                 print("[INFO] 执行登录...")
                 
                 try:
+                    # 等待表单加载
+                    sb.wait_for_element("input[name='email']", timeout=10)
+                    
                     # 填写登录表单
+                    sb.uc_click("input[name='email']")
                     sb.type("input[name='email']", username)
                     time.sleep(0.5)
+                    
+                    sb.uc_click("input[name='password']")
                     sb.type("input[name='password']", password)
                     time.sleep(0.5)
                     
                     screenshot(sb, "02-login-filled")
                     
                     # 点击登录按钮
-                    sb.click("button[type='submit']")
+                    sb.uc_click("button[type='submit']")
                     time.sleep(5)
                     
                     # 再次处理可能的 Cloudflare
-                    wait_for_cloudflare(sb, timeout=20)
+                    wait_for_cloudflare(sb, timeout=30)
                     
                 except Exception as e:
                     print(f"[ERROR] 登录操作失败: {e}")
@@ -329,14 +483,31 @@ def main():
                     sys.exit(1)
                 
                 # 检查登录结果
+                time.sleep(3)
                 current_url = sb.get_current_url()
+                
                 if "/auth/login" in current_url:
+                    # 检查是否有错误消息
+                    page_source = sb.get_page_source().lower()
+                    if "invalid" in page_source or "error" in page_source or "incorrect" in page_source:
+                        print("[ERROR] ❌ 登录失败：用户名或密码错误")
+                        sp = screenshot(sb, "02-login-failed")
+                        notify_telegram(ok=False, stage="登录失败", msg="用户名或密码错误", screenshot_path=sp)
+                        sys.exit(1)
+                    
+                    # 可能还在验证中
+                    print("[INFO] 等待登录完成...")
+                    time.sleep(5)
+                    wait_for_cloudflare(sb, timeout=20)
+                
+                current_url = sb.get_current_url()
+                if "/auth/login" not in current_url:
+                    print("[INFO] ✅ 登录成功")
+                else:
                     print("[ERROR] ❌ 登录失败")
                     sp = screenshot(sb, "02-login-failed")
                     notify_telegram(ok=False, stage="登录失败", screenshot_path=sp)
                     sys.exit(1)
-                
-                print("[INFO] ✅ 登录成功")
             else:
                 print("[INFO] ✅ 已登录状态")
             
@@ -344,17 +515,35 @@ def main():
             print("\n[INFO] ===== 步骤 2: 获取服务器列表 =====")
             print(f"[INFO] 访问: {DASHBOARD_URL}")
             
-            sb.uc_open_with_reconnect(DASHBOARD_URL, reconnect_time=3.0)
+            sb.uc_open_with_reconnect(DASHBOARD_URL, reconnect_time=4)
             time.sleep(3)
             
-            wait_for_cloudflare(sb, timeout=20)
+            wait_for_cloudflare(sb, timeout=30)
             screenshot(sb, "03-dashboard")
             
             # 获取服务器列表
             servers_data = fetch_servers_api(sb)
             
             if not servers_data:
+                # 尝试从页面解析
+                print("[INFO] 尝试从页面解析服务器列表...")
+                try:
+                    servers_data = sb.execute_script("""
+                        const rows = document.querySelectorAll('tr[data-id], .server-item, [data-server-id]');
+                        const servers = [];
+                        rows.forEach(row => {
+                            const id = row.dataset.id || row.dataset.serverId;
+                            const name = row.querySelector('.server-name, td:first-child')?.textContent?.trim();
+                            if (id) servers.push({id, name: name || 'Server ' + id});
+                        });
+                        return servers;
+                    """)
+                except:
+                    pass
+            
+            if not servers_data:
                 print("[WARN] ⚠️ 未找到任何服务器")
+                sp = screenshot(sb, "03-no-servers")
                 notify_telegram(ok=False, stage="获取服务器", msg="账号下没有服务器")
                 sys.exit(0)
             
@@ -365,12 +554,12 @@ def main():
             # ========== 3. 处理每个服务器 ==========
             print("\n[INFO] ===== 步骤 3: 续订服务器 =====")
             
-            for server in servers_data:
+            for idx, server in enumerate(servers_data):
                 server_id = server.get("id")
                 server_name = server.get("name", "Unknown")
                 
                 print(f"\n[INFO] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                print(f"[INFO] 处理: {server_name} (ID: {server_id})")
+                print(f"[INFO] [{idx+1}/{len(servers_data)}] 处理: {server_name}")
                 print(f"[INFO] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                 
                 # 访问服务器详情页
@@ -378,173 +567,92 @@ def main():
                 print(f"[INFO] 访问: {detail_url}")
                 
                 try:
-                    sb.uc_open_with_reconnect(detail_url, reconnect_time=3.0)
+                    sb.uc_open_with_reconnect(detail_url, reconnect_time=4)
                     time.sleep(3)
-                    wait_for_cloudflare(sb, timeout=20)
+                    wait_for_cloudflare(sb, timeout=30)
                 except Exception as e:
                     print(f"[WARN] 页面加载异常: {e}")
                 
                 screenshot(sb, f"04-server-{server_id}")
                 
-                # ========== 步骤 3.1: 点击底部 Renew 按钮 ==========
+                # 步骤 3.1: 点击底部 Renew 按钮
                 print("[INFO] 查找底部 Renew 按钮...")
                 
                 if not find_and_click_renew_button(sb, "bottom"):
-                    # 尝试通过 JavaScript 查找
-                    try:
-                        clicked = sb.execute_script("""
-                            const buttons = document.querySelectorAll('button, a');
-                            for (const btn of buttons) {
-                                if (btn.textContent.includes('Renew') && 
-                                    !btn.closest('.modal')) {
-                                    btn.click();
-                                    return true;
-                                }
-                            }
-                            return false;
-                        """)
-                        if not clicked:
-                            print("[ERROR] 未找到底部 Renew 按钮")
-                            results.append(f"❌ {server_name}: 未找到 Renew 按钮")
-                            continue
-                    except Exception as e:
-                        print(f"[ERROR] 查找按钮失败: {e}")
-                        results.append(f"❌ {server_name}: 查找按钮失败")
-                        continue
+                    print("[ERROR] 未找到底部 Renew 按钮")
+                    sp = screenshot(sb, f"04-no-renew-{server_id}")
+                    results.append(f"❌ {server_name}: 未找到 Renew 按钮")
+                    continue
                 
                 time.sleep(2)
                 screenshot(sb, f"05-dialog-{server_id}")
                 
-                # ========== 步骤 3.2: 等待 Cloudflare Turnstile ==========
-                print("[INFO] 等待 Cloudflare Turnstile 验证...")
-                
-                # 等待对话框中的 Turnstile 验证
-                turnstile_passed = False
-                for i in range(30):
-                    try:
-                        page_source = sb.get_page_source().lower()
-                        
-                        # 检查是否有 Turnstile
-                        if "turnstile" in page_source or "cf-turnstile" in page_source:
-                            if i % 5 == 0:
-                                print(f"[INFO] 等待 Turnstile 验证... ({i}/30秒)")
-                            
-                            # 尝试自动点击
-                            try:
-                                sb.uc_gui_click_captcha()
-                            except:
-                                pass
-                        else:
-                            turnstile_passed = True
-                            break
-                        
-                        # 检查是否验证成功
-                        if "success" in page_source or sb.is_element_visible("[data-state='solved']"):
-                            turnstile_passed = True
-                            print("[INFO] ✅ Turnstile 验证通过")
-                            break
-                            
-                    except:
-                        pass
-                    
-                    time.sleep(1)
-                
-                if not turnstile_passed:
-                    # 检查对话框是否仍然存在
-                    try:
-                        if sb.is_element_visible(".modal") or sb.is_element_visible("div[role='dialog']"):
-                            print("[INFO] 对话框存在，继续尝试...")
-                            turnstile_passed = True
-                    except:
-                        pass
-                
-                if not turnstile_passed:
-                    print("[WARN] ⚠️ Turnstile 验证超时")
+                # 步骤 3.2: 等待 Turnstile 验证
+                if not wait_for_turnstile_in_dialog(sb, timeout=45):
                     sp = screenshot(sb, f"06-turnstile-timeout-{server_id}")
                     results.append(f"⚠️ {server_name}: Turnstile 验证超时")
                     notify_telegram(ok=False, stage=f"Turnstile 超时 - {server_name}", screenshot_path=sp)
+                    
+                    # 尝试关闭对话框
+                    try:
+                        sb.execute_script("""
+                            const closeBtn = document.querySelector('.modal .close, .modal [aria-label="Close"], .btn-close');
+                            if (closeBtn) closeBtn.click();
+                        """)
+                    except:
+                        pass
                     continue
                 
                 screenshot(sb, f"06-turnstile-passed-{server_id}")
                 time.sleep(1)
                 
-                # ========== 步骤 3.3: 点击对话框中的 Renew 按钮 ==========
+                # 步骤 3.3: 点击对话框中的 Renew 按钮
                 print("[INFO] 点击对话框中的 Renew 按钮...")
                 
                 if not find_and_click_renew_button(sb, "dialog"):
-                    # 尝试通过 JavaScript
-                    try:
-                        clicked = sb.execute_script("""
-                            const modal = document.querySelector('.modal, [role="dialog"]');
-                            if (modal) {
-                                const buttons = modal.querySelectorAll('button');
-                                for (const btn of buttons) {
-                                    if (btn.textContent.includes('Renew')) {
-                                        btn.click();
-                                        return true;
-                                    }
-                                }
-                            }
-                            // 备选：找所有 Renew 按钮，点击最后一个
-                            const allBtns = document.querySelectorAll('button');
-                            const renewBtns = Array.from(allBtns).filter(b => b.textContent.includes('Renew'));
-                            if (renewBtns.length > 0) {
-                                renewBtns[renewBtns.length - 1].click();
-                                return true;
-                            }
-                            return false;
-                        """)
-                        if not clicked:
-                            print("[ERROR] 未找到对话框 Renew 按钮")
-                            sp = screenshot(sb, f"07-no-dialog-btn-{server_id}")
-                            results.append(f"❌ {server_name}: 未找到对话框 Renew 按钮")
-                            continue
-                    except Exception as e:
-                        print(f"[ERROR] 点击对话框按钮失败: {e}")
-                        results.append(f"❌ {server_name}: 点击失败")
-                        continue
+                    print("[ERROR] 未找到对话框 Renew 按钮")
+                    sp = screenshot(sb, f"07-no-dialog-btn-{server_id}")
+                    results.append(f"❌ {server_name}: 未找到对话框 Renew 按钮")
+                    continue
                 
                 time.sleep(3)
                 
-                # ========== 检查结果 ==========
+                # 检查结果
                 screenshot(sb, f"08-result-{server_id}")
                 
                 try:
-                    page_text = sb.get_page_source().lower()
+                    # 检查是否有成功提示
+                    result_check = sb.execute_script("""
+                        const body = document.body.innerText.toLowerCase();
+                        const hasSuccess = body.includes('success') || 
+                                          body.includes('renewed') || 
+                                          body.includes('extended');
+                        const hasError = body.includes('error') || body.includes('failed');
+                        const modalClosed = !document.querySelector('.modal.show, [role="dialog"]:not([aria-hidden="true"])');
+                        
+                        return {hasSuccess, hasError, modalClosed};
+                    """)
                     
-                    success_keywords = ["success", "renewed", "extended", "successfully", "续订成功"]
-                    error_keywords = ["error", "failed", "失败"]
-                    
-                    if any(kw in page_text for kw in success_keywords):
+                    if result_check.get('hasSuccess') or result_check.get('modalClosed'):
                         print("[INFO] 🎉 续订成功！")
                         results.append(f"🎉 {server_name}: 续订成功")
                         sp = screenshot(sb, f"09-success-{server_id}")
                         notify_telegram(ok=True, stage=f"续订成功 - {server_name}", screenshot_path=sp)
-                    elif any(kw in page_text for kw in error_keywords):
+                    elif result_check.get('hasError'):
                         print("[ERROR] ❌ 续订失败")
                         results.append(f"❌ {server_name}: 续订失败")
                         sp = screenshot(sb, f"09-failed-{server_id}")
                         notify_telegram(ok=False, stage=f"续订失败 - {server_name}", screenshot_path=sp)
                     else:
-                        # 检查对话框是否关闭
-                        modal_visible = False
-                        try:
-                            modal_visible = sb.is_element_visible(".modal") or sb.is_element_visible("div[role='dialog']")
-                        except:
-                            pass
+                        print("[INFO] ✅ 续订完成（状态未知）")
+                        results.append(f"✅ {server_name}: 续订完成")
                         
-                        if not modal_visible:
-                            print("[INFO] ✅ 对话框已关闭，续订可能成功")
-                            results.append(f"✅ {server_name}: 续订完成")
-                            sp = screenshot(sb, f"09-done-{server_id}")
-                            notify_telegram(ok=True, stage=f"续订完成 - {server_name}", screenshot_path=sp)
-                        else:
-                            print("[WARN] ⚠️ 状态未知")
-                            results.append(f"⚠️ {server_name}: 状态未知")
-                            
                 except Exception as e:
                     print(f"[WARN] 检查结果时出错: {e}")
                     results.append(f"⚠️ {server_name}: 检查结果出错")
+                
+                # 等待一下再处理下一个
+                time.sleep(2)
             
             # ========== 汇总 ==========
             print("\n" + "=" * 50)
@@ -554,7 +662,6 @@ def main():
             summary = "\n".join(results) if results else "无服务器处理"
             print(summary)
             
-            # 发送汇总通知
             success_count = sum(1 for r in results if "🎉" in r or "✅" in r)
             fail_count = sum(1 for r in results if "❌" in r)
             
@@ -565,6 +672,9 @@ def main():
             )
             
             print("\n[INFO] 🏁 全部完成")
+            
+            if fail_count > 0:
+                sys.exit(1)
             
     except ImportError as e:
         print(f"[ERROR] 缺少依赖: {e}")
@@ -578,15 +688,6 @@ def main():
         
         notify_telegram(ok=False, stage="异常", msg=str(e))
         sys.exit(1)
-        
-    finally:
-        # 清理虚拟显示
-        if display:
-            try:
-                display.stop()
-                print("[INFO] 虚拟显示已关闭")
-            except:
-                pass
 
 
 if __name__ == "__main__":
