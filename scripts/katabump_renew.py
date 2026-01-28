@@ -1,16 +1,3 @@
-我看到问题了！从截图 `05-dialog` 和 `06-turnstile-timeout` 可以看到：
-
-1. 对话框已打开，显示 "Verify you are human" 的 Turnstile checkbox
-2. **但是 checkbox 没有被点击**，所以验证一直没有完成
-3. 状态一直是 `unknown`，因为 Turnstile 还在等待用户点击
-
-问题是：**Turnstile 需要用户点击 checkbox 才会开始验证**，而不是自动完成的。
-
-让我修复脚本，添加点击 Turnstile checkbox 的功能：
-
-### 更新后的 `scripts/katabump_renew.py`
-
-```python
 #!/usr/bin/env python3
 """
 KataBump 自动续订 - SeleniumBase UC Mode 版本
