@@ -3,23 +3,28 @@
 KataBump 自动续订 - SeleniumBase UC Mode 版本
 支持 Cloudflare Turnstile 绕过
 """
+
 import os
 import sys
 import time
 import platform
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
+
 # ==================== 配置 ====================
+
 BASE_URL = "https://dashboard.katabump.com"
 LOGIN_URL = f"{BASE_URL}/auth/login"
 DASHBOARD_URL = f"{BASE_URL}/dashboard"
+
 # ==================== 工具函数 ====================
+
 def notify_telegram(ok: bool, stage: str, msg: str = "", screenshot_path: str = ""):
     """发送 Telegram 通知"""
     try:
         import urllib.request
-        import urllib.parse
         
         token = os.environ.get("TG_BOT_TOKEN")
         chat_id = os.environ.get("TG_CHAT_ID")
@@ -42,6 +47,8 @@ def notify_telegram(ok: bool, stage: str, msg: str = "", screenshot_path: str = 
             send_telegram_photo(token, chat_id, screenshot_path, stage)
     except Exception as e:
         print(f"[WARN] Telegram 通知失败：{e}")
+
+
 def send_telegram_photo(token: str, chat_id: str, photo_path: str, caption: str):
     """发送 Telegram 图片"""
     try:
@@ -60,6 +67,8 @@ def send_telegram_photo(token: str, chat_id: str, photo_path: str, caption: str)
         urllib.request.urlopen(req, timeout=30)
     except Exception as e:
         print(f"[WARN] 发送图片失败: {e}")
+
+
 def screenshot(sb, name: str) -> str:
     """保存截图"""
     path = f"./{name}.png"
@@ -69,8 +78,10 @@ def screenshot(sb, name: str) -> str:
     except Exception as e:
         print(f"[WARN] 截图失败: {e}")
     return path
+
+
 def wait_for_cloudflare(sb, timeout: int = 60) -> bool:
-    """等待并处理 Cloudflare 验证（登录页面）"""
+    """等待并处理 Cloudflare 验证"""
     print("[INFO] 检查 Cloudflare 验证...")
     
     start_time = time.time()
@@ -105,135 +116,13 @@ def wait_for_cloudflare(sb, timeout: int = 60) -> bool:
             time.sleep(1)
             
         except Exception as e:
-            print(f"[WARN] 检查 Cloudflare 状态时出错: {e}")
+            print(f"[WARN] 检查状态时出错: {e}")
             time.sleep(1)
     
     print("[WARN] ⚠️ Cloudflare 验证超时")
     return False
-def click_turnstile_in_modal(sb) -> bool:
-    """
-    点击对话框中的 Turnstile checkbox
-    使用 SeleniumBase 的 uc_gui_click_captcha
-    """
-    print("[INFO] 尝试点击 Turnstile checkbox...")
-    
-    # 首先确认对话框已打开且有 Turnstile
-    try:
-        has_turnstile = sb.execute_script("""
-            const modal = document.getElementById('renew-modal');
-            if (!modal || !modal.classList.contains('show')) return false;
-            const turnstile = modal.querySelector('.cf-turnstile');
-            return !!turnstile;
-        """)
-        
-        if not has_turnstile:
-            print("[WARN] 对话框中没有找到 Turnstile")
-            return False
-    except Exception as e:
-        print(f"[WARN] 检查 Turnstile 失败: {e}")
-        return False
-    
-    # 方法1: 使用 uc_gui_click_captcha (最可靠)
-    try:
-        print("[INFO] 使用 uc_gui_click_captcha...")
-        sb.uc_gui_click_captcha()
-        time.sleep(3)
-        print("[INFO] uc_gui_click_captcha 执行完成")
-        return True
-    except Exception as e:
-        print(f"[DEBUG] uc_gui_click_captcha 失败: {e}")
-    
-    # 方法2: 使用 uc_gui_click_cf (专门针对 Cloudflare)
-    try:
-        print("[INFO] 使用 uc_gui_click_cf...")
-        sb.uc_gui_click_cf()
-        time.sleep(3)
-        print("[INFO] uc_gui_click_cf 执行完成")
-        return True
-    except Exception as e:
-        print(f"[DEBUG] uc_gui_click_cf 失败: {e}")
-    
-    # 方法3: 直接点击 iframe
-    try:
-        print("[INFO] 尝试直接点击 Turnstile iframe...")
-        
-        # 获取 iframe 位置
-        iframe_info = sb.execute_script("""
-            const modal = document.getElementById('renew-modal');
-            if (!modal) return null;
-            
-            const iframe = modal.querySelector('.cf-turnstile iframe');
-            if (!iframe) return null;
-            
-            const rect = iframe.getBoundingClientRect();
-            return {
-                x: rect.left + 30,  // checkbox 在左侧
-                y: rect.top + rect.height / 2,
-                width: rect.width,
-                height: rect.height
-            };
-        """)
-        
-        if iframe_info:
-            print(f"[DEBUG] iframe 位置: {iframe_info}")
-            
-            # 使用 pyautogui 点击（如果可用）
-            try:
-                import pyautogui
-                pyautogui.click(iframe_info['x'], iframe_info['y'])
-                print("[INFO] pyautogui 点击成功")
-                time.sleep(3)
-                return True
-            except ImportError:
-                print("[DEBUG] pyautogui 不可用")
-            except Exception as e:
-                print(f"[DEBUG] pyautogui 点击失败: {e}")
-            
-            # 使用 ActionChains
-            try:
-                from selenium.webdriver.common.action_chains import ActionChains
-                
-                iframe = sb.find_element("#renew-modal .cf-turnstile iframe")
-                actions = ActionChains(sb.driver)
-                actions.move_to_element_with_offset(iframe, -iframe_info['width']/2 + 30, 0)
-                actions.click()
-                actions.perform()
-                print("[INFO] ActionChains 点击成功")
-                time.sleep(3)
-                return True
-            except Exception as e:
-                print(f"[DEBUG] ActionChains 失败: {e}")
-                
-    except Exception as e:
-        print(f"[DEBUG] 直接点击 iframe 失败: {e}")
-    
-    # 方法4: 切换到 iframe 内部点击
-    try:
-        print("[INFO] 尝试切换到 iframe 内部...")
-        
-        iframe_selector = "#renew-modal .cf-turnstile iframe"
-        if sb.is_element_present(iframe_selector):
-            sb.switch_to_frame(iframe_selector)
-            time.sleep(1)
-            
-            # 点击 body 或 checkbox
-            try:
-                sb.click("body")
-                print("[INFO] 在 iframe 内点击 body")
-            except:
-                pass
-            
-            sb.switch_to_default_content()
-            time.sleep(3)
-            return True
-    except Exception as e:
-        print(f"[DEBUG] 切换 iframe 失败: {e}")
-        try:
-            sb.switch_to_default_content()
-        except:
-            pass
-    
-    return False
+
+
 def check_turnstile_completed(sb) -> bool:
     """检查 Turnstile 是否已完成验证"""
     try:
@@ -255,23 +144,7 @@ def check_turnstile_completed(sb) -> bool:
                 }
             }
             
-            // 检查 Turnstile div 的状态
-            const turnstileDiv = modal.querySelector('.cf-turnstile');
-            if (turnstileDiv) {
-                // 检查是否有成功的视觉指示
-                const successIndicators = turnstileDiv.querySelectorAll('[data-success], .success, [aria-checked="true"]');
-                if (successIndicators.length > 0) {
-                    return {completed: true, reason: 'visual_success'};
-                }
-                
-                // 检查 iframe 内容（通过 data 属性）
-                const iframe = turnstileDiv.querySelector('iframe');
-                if (iframe) {
-                    return {completed: false, reason: 'waiting_iframe'};
-                }
-            }
-            
-            return {completed: false, reason: 'unknown'};
+            return {completed: false, reason: 'waiting'};
         """)
         
         print(f"[DEBUG] Turnstile 检查结果: {result}")
@@ -280,15 +153,14 @@ def check_turnstile_completed(sb) -> bool:
     except Exception as e:
         print(f"[DEBUG] 检查 Turnstile 状态出错: {e}")
         return False
+
+
 def wait_for_turnstile_in_modal(sb, timeout: int = 60) -> bool:
-    """
-    等待对话框中的 Turnstile 验证完成
-    """
+    """等待对话框中的 Turnstile 验证完成"""
     print("[INFO] 等待对话框中的 Turnstile 验证...")
     
     start_time = time.time()
-    click_attempts = 0
-    max_click_attempts = 5
+    clicked = False
     
     while time.time() - start_time < timeout:
         # 检查是否已完成
@@ -296,16 +168,17 @@ def wait_for_turnstile_in_modal(sb, timeout: int = 60) -> bool:
             print("[INFO] ✅ Turnstile 验证已完成")
             return True
         
-        # 尝试点击（最多尝试几次）
-        if click_attempts < max_click_attempts:
-            elapsed = time.time() - start_time
-            # 每 8 秒尝试点击一次
-            if elapsed > click_attempts * 8:
-                print(f"[INFO] 第 {click_attempts + 1} 次尝试点击 Turnstile...")
-                click_turnstile_in_modal(sb)
-                click_attempts += 1
+        # 只点击一次
+        if not clicked:
+            print("[INFO] 尝试点击 Turnstile...")
+            try:
+                sb.uc_gui_click_captcha()
+                print("[INFO] uc_gui_click_captcha 执行完成")
+                clicked = True
                 time.sleep(3)
-                continue
+            except Exception as e:
+                print(f"[WARN] 点击 Turnstile 失败: {e}")
+                clicked = True  # 避免重复尝试
         
         time.sleep(1)
     
@@ -316,6 +189,8 @@ def wait_for_turnstile_in_modal(sb, timeout: int = 60) -> bool:
     
     print("[WARN] ⚠️ Turnstile 验证超时")
     return False
+
+
 def submit_renew_form(sb) -> bool:
     """提交续订表单"""
     print("[INFO] 提交续订表单...")
@@ -328,17 +203,7 @@ def submit_renew_form(sb) -> bool:
             const submitBtn = modal.querySelector('button[type="submit"]');
             if (submitBtn) {
                 submitBtn.click();
-                return 'clicked_submit';
-            }
-            
-            const buttons = modal.querySelectorAll('button');
-            for (const btn of buttons) {
-                if (btn.textContent.toLowerCase().includes('renew') && 
-                    !btn.classList.contains('btn-close') &&
-                    !btn.classList.contains('btn-secondary')) {
-                    btn.click();
-                    return 'clicked_renew_btn';
-                }
+                return 'clicked';
             }
             
             return 'no_button';
@@ -346,7 +211,7 @@ def submit_renew_form(sb) -> bool:
         
         print(f"[DEBUG] 点击结果: {result}")
         
-        if result in ['clicked_submit', 'clicked_renew_btn']:
+        if result == 'clicked':
             time.sleep(3)
             return True
             
@@ -354,85 +219,53 @@ def submit_renew_form(sb) -> bool:
         print(f"[ERROR] 提交表单失败: {e}")
     
     return False
+
+
 def check_renew_result(sb) -> dict:
     """检查续订结果"""
     try:
         time.sleep(2)
         
+        current_url = sb.get_current_url()
+        
+        # 检查 URL 参数 - 最可靠的方式
+        if "renew=success" in current_url:
+            # 获取到期日期
+            expiry_date = sb.execute_script("""
+                const text = document.body.innerText;
+                const match = text.match(/Expiry[\\s\\S]*?(\\d{4}-\\d{2}-\\d{2})/);
+                return match ? match[1] : '';
+            """) or ""
+            return {"success": True, "error": False, "expiry_date": expiry_date}
+        
+        if "renew-error=" in current_url:
+            parsed = urllib.parse.urlparse(current_url)
+            params = urllib.parse.parse_qs(parsed.query)
+            error_msg = params.get("renew-error", ["未知错误"])[0]
+            return {"success": False, "error": True, "message": error_msg}
+        
+        # 检查页面内容
         page_source = sb.get_page_source()
         
-        # 检查错误消息
-        error_messages = [
-            "please complete the captcha",
-            "captcha to continue",
-            "verification failed",
-            "invalid captcha",
-        ]
+        if "alert-success" in page_source and "renewed" in page_source.lower():
+            return {"success": True, "error": False}
         
-        page_lower = page_source.lower()
-        for err_msg in error_messages:
-            if err_msg in page_lower:
-                return {
-                    "success": False,
-                    "error": True,
-                    "message": f"发现错误: {err_msg}"
-                }
-        
-        # 检查成功消息
-        success_indicators = [
-            "alert-success" in page_source,
-            "renewed successfully" in page_lower,
-            "server renewed" in page_lower,
-        ]
+        if "please complete the captcha" in page_source.lower():
+            return {"success": False, "error": True, "message": "Captcha 验证失败"}
         
         # 检查对话框是否关闭
         modal_closed = sb.execute_script("""
             const modal = document.getElementById('renew-modal');
-            if (!modal) return true;
-            return !modal.classList.contains('show');
+            return !modal || !modal.classList.contains('show');
         """)
         
-        # 检查是否有警告消息（橙色/黄色提示）
-        has_warning = sb.execute_script("""
-            const alerts = document.querySelectorAll('.alert-warning, .alert-danger');
-            for (const alert of alerts) {
-                if (alert.textContent.toLowerCase().includes('captcha')) {
-                    return true;
-                }
-            }
-            return false;
-        """)
-        
-        if has_warning:
-            return {
-                "success": False,
-                "error": True,
-                "message": "Captcha 验证失败"
-            }
-        
-        # 获取到期日期
-        expiry_date = sb.execute_script("""
-            const rows = document.querySelectorAll('.row');
-            for (const row of rows) {
-                const label = row.querySelector('.label');
-                if (label && label.textContent.includes('Expiry')) {
-                    const value = row.querySelector('.col-lg-9, .col-md-8');
-                    if (value) return value.textContent.trim();
-                }
-            }
-            return '';
-        """)
-        
-        return {
-            "success": any(success_indicators) or (modal_closed and not has_warning),
-            "error": False,
-            "modal_closed": modal_closed,
-            "expiry_date": expiry_date
-        }
+        return {"success": modal_closed, "error": False, "modal_closed": modal_closed}
         
     except Exception as e:
         print(f"[WARN] 检查结果时出错: {e}")
         return {"success": False, "error": True, "message": str(e)}
+
+
 def fetch_servers_api(sb) -> List[Dict]:
     """通过 API 获取服务器列表"""
     try:
@@ -446,7 +279,10 @@ def fetch_servers_api(sb) -> List[Dict]:
     except Exception as e:
         print(f"[WARN] API 获取服务器列表失败: {e}")
     return []
+
+
 # ==================== 主函数 ====================
+
 def main():
     username = os.environ.get("KATA_USERNAME", "")
     password = os.environ.get("KATA_PASSWORD", "")
@@ -475,15 +311,18 @@ def main():
         }
         
         if proxy_server:
-            import urllib.request
             try:
-                proxy_handler = urllib.request.ProxyHandler({'http': proxy_server, 'https': proxy_server})
+                import urllib.request
+                proxy_handler = urllib.request.ProxyHandler({
+                    'http': proxy_server, 
+                    'https': proxy_server
+                })
                 opener = urllib.request.build_opener(proxy_handler)
                 opener.open("http://httpbin.org/ip", timeout=5)
                 print(f"[INFO] 使用代理: {proxy_server}")
                 sb_kwargs["proxy"] = proxy_server
             except:
-                print(f"[WARN] 代理不可用，直接连接")
+                print("[WARN] 代理不可用，直接连接")
         
         with SB(**sb_kwargs) as sb:
             print("[INFO] 浏览器已启动")
@@ -559,7 +398,7 @@ def main():
             
             if not servers_data:
                 print("[WARN] ⚠️ 未找到任何服务器")
-                sp = screenshot(sb, "03-no-servers")
+                screenshot(sb, "03-no-servers")
                 notify_telegram(ok=False, stage="获取服务器", msg="账号下没有服务器")
                 sys.exit(0)
             
@@ -590,7 +429,18 @@ def main():
                 
                 screenshot(sb, f"04-server-{server_id}")
                 
-                # 步骤 3.1: 点击底部 Renew 按钮打开对话框
+                # 检查是否可以续订
+                can_renew = sb.execute_script("""
+                    const text = document.body.innerText.toLowerCase();
+                    return !text.includes("can't renew") && !text.includes("cannot renew");
+                """)
+                
+                if not can_renew:
+                    print("[INFO] ⏳ 当前无法续订（未到续订时间）")
+                    results.append(f"⏳ {server_name}: 未到续订时间")
+                    continue
+                
+                # 点击 Renew 按钮打开对话框
                 print("[INFO] 点击 Renew 按钮打开对话框...")
                 
                 try:
@@ -603,8 +453,7 @@ def main():
                         
                         const buttons = document.querySelectorAll('button');
                         for (const b of buttons) {
-                            if (b.textContent.toLowerCase().includes('renew') && 
-                                !b.closest('.modal')) {
+                            if (b.textContent.toLowerCase().includes('renew') && !b.closest('.modal')) {
                                 b.click();
                                 return true;
                             }
@@ -625,11 +474,12 @@ def main():
                 time.sleep(2)
                 screenshot(sb, f"05-dialog-{server_id}")
                 
-                # 步骤 3.2: 等待 Turnstile 验证完成
+                # 等待 Turnstile 验证完成
                 if not wait_for_turnstile_in_modal(sb, timeout=60):
                     sp = screenshot(sb, f"06-turnstile-timeout-{server_id}")
                     results.append(f"⚠️ {server_name}: Turnstile 验证超时")
                     
+                    # 关闭对话框
                     try:
                         sb.execute_script("""
                             const closeBtn = document.querySelector('#renew-modal .btn-close');
@@ -642,33 +492,38 @@ def main():
                 screenshot(sb, f"06-turnstile-passed-{server_id}")
                 time.sleep(1)
                 
-                # 步骤 3.3: 提交表单
+                # 提交表单
                 if not submit_renew_form(sb):
                     print("[ERROR] 提交表单失败")
-                    sp = screenshot(sb, f"07-submit-failed-{server_id}")
+                    screenshot(sb, f"07-submit-failed-{server_id}")
                     results.append(f"❌ {server_name}: 提交表单失败")
                     continue
                 
                 time.sleep(3)
                 screenshot(sb, f"08-result-{server_id}")
                 
-                # 步骤 3.4: 检查结果
+                # 检查结果
                 result = check_renew_result(sb)
                 print(f"[DEBUG] 续订结果: {result}")
                 
                 if result.get("success") and not result.get("error"):
                     print("[INFO] 🎉 续订成功！")
-                    if result.get("expiry_date"):
-                        print(f"[INFO] 到期日期: {result['expiry_date']}")
-                    results.append(f"🎉 {server_name}: 续订成功")
+                    expiry = result.get("expiry_date", "")
+                    if expiry:
+                        print(f"[INFO] 到期日期: {expiry}")
+                        results.append(f"🎉 {server_name}: 续订成功 (到期: {expiry})")
+                    else:
+                        results.append(f"🎉 {server_name}: 续订成功")
                     sp = screenshot(sb, f"09-success-{server_id}")
-                    notify_telegram(ok=True, stage=f"续订成功 - {server_name}", screenshot_path=sp)
+                    notify_telegram(ok=True, stage=f"续订成功 - {server_name}", 
+                                   msg=f"到期: {expiry}" if expiry else "", screenshot_path=sp)
                 else:
                     error_msg = result.get("message", "未知错误")
                     print(f"[ERROR] ❌ 续订失败: {error_msg}")
                     results.append(f"❌ {server_name}: {error_msg}")
                     sp = screenshot(sb, f"09-failed-{server_id}")
-                    notify_telegram(ok=False, stage=f"续订失败 - {server_name}", msg=error_msg, screenshot_path=sp)
+                    notify_telegram(ok=False, stage=f"续订失败 - {server_name}", 
+                                   msg=error_msg, screenshot_path=sp)
                 
                 time.sleep(2)
             
@@ -680,13 +535,14 @@ def main():
             summary = "\n".join(results) if results else "无服务器处理"
             print(summary)
             
-            success_count = sum(1 for r in results if "🎉" in r or "✅" in r)
+            success_count = sum(1 for r in results if "🎉" in r)
             fail_count = sum(1 for r in results if "❌" in r)
+            skip_count = sum(1 for r in results if "⏳" in r or "⚠️" in r)
             
             notify_telegram(
                 ok=(fail_count == 0),
                 stage="执行完成",
-                msg=f"成功: {success_count}, 失败: {fail_count}\n{summary}"
+                msg=f"成功: {success_count}, 失败: {fail_count}, 跳过: {skip_count}\n{summary}"
             )
             
             print("\n[INFO] 🏁 全部完成")
@@ -696,6 +552,7 @@ def main():
             
     except ImportError as e:
         print(f"[ERROR] 缺少依赖: {e}")
+        print("[INFO] 请安装: pip install seleniumbase")
         sys.exit(1)
         
     except Exception as e:
