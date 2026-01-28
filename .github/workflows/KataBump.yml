@@ -32,17 +32,26 @@ jobs:
             xvfb \
             libgtk-3-0 \
             libnotify-dev \
-            libgconf-2-4 \
             libnss3 \
             libxss1 \
-            libasound2 \
+            libasound2t64 \
             libxtst6 \
             xauth \
             fonts-liberation \
-            libappindicator3-1 \
             libgbm1 \
             libxkbcommon0 \
-            libvulkan1
+            libvulkan1 \
+            libatk1.0-0 \
+            libatk-bridge2.0-0 \
+            libcups2 \
+            libdrm2 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxrandr2 \
+            libpango-1.0-0 \
+            libcairo2 \
+            wget \
+            curl
 
       - name: 安装 Python 依赖
         run: |
@@ -120,12 +129,10 @@ jobs:
           FORCE_RENEW: ${{ github.event.inputs.force_renew || 'false' }}
           PROXY_SERVER: "http://127.0.0.1:8080"
         run: |
-          # 启动虚拟显示
           export DISPLAY=:99
           Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
           sleep 2
           
-          # 运行脚本
           python scripts/katabump_renew.py
 
       - name: 上传截图
