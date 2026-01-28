@@ -14,18 +14,51 @@ on:
 jobs:
   renew:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v4
+      - name: 检出代码
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: 设置 Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 安装依赖
+      - name: 安装系统依赖
         run: |
-          pip install playwright pynacl
-          playwright install chromium
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb \
+            libgtk-3-0 \
+            libnotify-dev \
+            libnss3 \
+            libxss1 \
+            libasound2t64 \
+            libxtst6 \
+            xauth \
+            fonts-liberation \
+            libgbm1 \
+            libxkbcommon0 \
+            libvulkan1 \
+            libatk1.0-0 \
+            libatk-bridge2.0-0 \
+            libcups2 \
+            libdrm2 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxrandr2 \
+            libpango-1.0-0 \
+            libcairo2 \
+            wget \
+            curl
+
+      - name: 安装 Python 依赖
+        run: |
+          pip install --upgrade pip
+          pip install seleniumbase pyvirtualdisplay
+          seleniumbase install chromedriver
+          seleniumbase install chrome
 
       - name: 下载 Hysteria2
         run: |
@@ -36,17 +69,26 @@ jobs:
         env:
           HY2_URL: ${{ secrets.HY2_URL }}
         run: |
+          if [ -z "$HY2_URL" ]; then
+            echo "⚠️ HY2_URL 未设置，跳过代理配置"
+            exit 0
+          fi
+          
           URL_BODY="${HY2_URL#hysteria2://}"
           URL_BODY="${URL_BODY%%#*}"
           PASSWORD="${URL_BODY%%@*}"
           SERVER_PART="${URL_BODY#*@}"
           SERVER="${SERVER_PART%%\?*}"
           PARAMS="${SERVER_PART#*\?}"
+          
           get_param() { echo "$PARAMS" | tr '&' '\n' | grep "^$1=" | cut -d'=' -f2; }
+          
           SNI=$(get_param "sni")
           INSECURE=$(get_param "insecure")
+          
           [ -z "$SNI" ] && SNI="${SERVER%%:*}"
           [ "$INSECURE" = "1" ] && INSECURE="true" || INSECURE="false"
+          
           cat > hy2-config.yaml << EOF
           server: ${SERVER}
           auth: ${PASSWORD}
@@ -58,30 +100,53 @@ jobs:
           http:
             listen: 127.0.0.1:8080
           EOF
+          
+          echo "✅ Hysteria2 配置完成"
 
       - name: 启动代理
         run: |
-          ./hysteria client -c hy2-config.yaml > /dev/null 2>&1 &
-          sleep 3
-          echo "✅ 代理已启动"
+          if [ -f "hy2-config.yaml" ]; then
+            ./hysteria client -c hy2-config.yaml > hysteria.log 2>&1 &
+            sleep 3
+            
+            if curl -s --proxy http://127.0.0.1:8080 --max-time 10 https://httpbin.org/ip > /dev/null 2>&1; then
+              echo "✅ 代理已启动并可用"
+            else
+              echo "⚠️ 代理启动但可能不可用，继续执行..."
+            fi
+          else
+            echo "⚠️ 无代理配置，直接连接"
+          fi
 
-      - name: 运行续订
+      - name: 运行续订脚本
         env:
-          KATA_COOKIES: ${{ secrets.KATA_COOKIES }}
           KATA_USERNAME: ${{ secrets.KATA_EMAIL }}
           KATA_PASSWORD: ${{ secrets.KATA_PASSWORD }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
           FORCE_RENEW: ${{ github.event.inputs.force_renew || 'false' }}
           PROXY_SERVER: "http://127.0.0.1:8080"
-        run: python scripts/katabump_renew.py
+        run: |
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
+          sleep 2
+          
+          python scripts/katabump_renew.py
 
-      - name: 上传截图
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: screenshots
-          path: "*.png"
-          retention-days: 7
+#      - name: 上传截图
+#        uses: actions/upload-artifact@v4
+#        if: always()
+#        with:
+#          name: screenshots-${{ github.run_number }}
+#          path: "*.png"
+#          retention-days: 7
+
+#      - name: 上传日志
+#        uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: logs-${{ github.run_number }}
+#          path: |
+#            *.log
+#            hysteria.log
+#          retention-days: 3
