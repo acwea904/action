@@ -5,7 +5,7 @@ import httpx
 from datetime import datetime
 from playwright.async_api import async_playwright
 
-async def send_telegram_notification(bot_token, chat_id, username, screenshot_path, status="success", error_msg=None):
+async def send_telegram_notification(bot_token, chat_id, username, screenshot_path, status="success", error_msg=None, command=None):
     """发送 Telegram 通知"""
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
     
@@ -22,6 +22,7 @@ async def send_telegram_notification(bot_token, chat_id, username, screenshot_pa
 ⏰ {current_time}
 ━━━━━━━━━━━━━━━━━━
 ├ 👤 账号: {username}
+├ 📝 命令: <code>{command or '无'}</code>
 └ 状态: {status_text}"""
     
     async with httpx.AsyncClient() as client:
@@ -46,7 +47,6 @@ async def check_login_status(page):
     """检查登录状态，返回状态码和消息"""
     current_url = page.url
     
-    # 检查URL中的特殊状态
     if 'account-disabled' in current_url:
         return 'disabled', '账户已禁用'
     
@@ -56,7 +56,6 @@ async def check_login_status(page):
     if '/login' not in current_url:
         return 'success', '登录成功'
     
-    # 检查页面上的错误消息
     try:
         page_text = await page.text_content('body')
         if page_text:
@@ -71,21 +70,34 @@ async def check_login_status(page):
     return 'pending', '等待中'
 
 async def main():
-    # 从环境变量获取凭据
-    username = os.environ.get('DATA_USERNAME', 'apiorgvm')
+    # 从环境变量获取配置
+    username = os.environ.get('DATA_USERNAME')
     password = os.environ.get('DATA_PASSWORD')
+    command = os.environ.get('DATA_COMMAND', '')  # 自定义命令
     tg_bot_token = os.environ.get('TG_BOT_TOKEN')
     tg_chat_id = os.environ.get('TG_CHAT_ID')
+    
+    # 验证必需参数
+    if not username:
+        print("❌ 错误: DATA_USERNAME 环境变量未设置")
+        exit(1)
     
     if not password:
         print("❌ 错误: DATA_PASSWORD 环境变量未设置")
         exit(1)
     
+    if not command:
+        print("❌ 错误: DATA_COMMAND 环境变量未设置")
+        exit(1)
+    
     base_url = "https://sv66.dataonline.vn:2222"
-    command = 'pgrep -f "npm" >/dev/null || nohup ./npm -c config.yml >/dev/null 2>&1 &'
     final_status = "failed"
     error_message = None
     screenshot_file = "error_screenshot.png"
+    
+    print(f"📋 配置信息:")
+    print(f"  👤 用户名: {username}")
+    print(f"  📝 命令: {command}")
     
     async with async_playwright() as p:
         print("🚀 启动浏览器...")
@@ -104,11 +116,9 @@ async def main():
             await page.goto(login_url, timeout=60000)
             await page.wait_for_load_state('networkidle')
             
-            # 等待Vue应用完全加载
             print("⏳ 等待页面完全加载...")
             await asyncio.sleep(3)
             
-            # 等待登录表单出现
             try:
                 await page.wait_for_selector('input', timeout=15000)
                 print("  ✅ 登录表单已加载")
@@ -119,7 +129,6 @@ async def main():
                 raise Exception("登录表单未加载")
             
             await page.screenshot(path="0_login_page.png")
-            print("📸 登录页面截图已保存")
             
             # 填写用户名
             print("🔐 正在登录...")
@@ -142,7 +151,7 @@ async def main():
                         await element.type(username, delay=50)
                         value = await element.input_value()
                         if value == username:
-                            print(f"  ✅ 用户名已填写: {username}")
+                            print(f"  ✅ 用户名已填写")
                             username_filled = True
                             break
                 except:
@@ -201,17 +210,16 @@ async def main():
                 except:
                     continue
             
-            # 等待并检查登录结果
+            # 检查登录结果
             print("⏳ 等待登录响应...")
             await asyncio.sleep(3)
             
-            # 检查登录状态
             max_retries = 10
             for i in range(max_retries):
                 await asyncio.sleep(1)
                 status, message = await check_login_status(page)
                 current_url = page.url
-                print(f"  🔍 状态: {status} - {message} (URL: {current_url})")
+                print(f"  🔍 状态: {status} - {message}")
                 
                 if status == 'disabled':
                     print("  🚫 账户已禁用!")
@@ -238,13 +246,12 @@ async def main():
             
             await page.screenshot(path="after_login.png")
             
-            # 如果账户禁用或密码错误，直接结束
+            # 账户禁用或密码错误，直接结束
             if final_status in ['disabled', 'wrong_password']:
                 print(f"⚠️ 无法继续执行: {final_status}")
             
-            # 只有登录成功才继续执行终端操作
+            # 登录成功才继续执行终端操作
             elif final_status == 'success':
-                # 访问终端页面
                 terminal_url = f"{base_url}/evo/user/terminal"
                 print(f"📺 访问终端: {terminal_url}")
                 await page.goto(terminal_url, timeout=60000)
@@ -299,7 +306,7 @@ async def main():
         finally:
             await browser.close()
         
-        # 发送 Telegram 通知
+        # 发送通知
         if tg_bot_token and tg_chat_id:
             await send_telegram_notification(
                 tg_bot_token, 
@@ -307,12 +314,12 @@ async def main():
                 username, 
                 screenshot_file,
                 status=final_status,
-                error_msg=error_message
+                error_msg=error_message,
+                command=command
             )
         else:
             print("⚠️ 未设置 Telegram 配置，跳过通知")
         
-        # 账户禁用不算脚本失败，正常退出
         if final_status in ['disabled', 'wrong_password']:
             print(f"⚠️ 脚本结束: {final_status}")
             exit(0)
