@@ -76,12 +76,13 @@ def ensure_output_dir():
 
 def screenshot_path(account_idx: int, server_id: str, stage: str) -> str:
     timestamp = datetime.now().strftime("%H%M%S")
-    filename = f"acc{account_idx + 1}_{server_id}_{stage}_{timestamp}.png"
+    masked = mask_id(server_id)
+    filename = f"acc{account_idx + 1}_{masked}_{stage}_{timestamp}.png"
     return str(OUTPUT_DIR / filename)
 
 
 def mask_id(sid: str) -> str:
-    return f"{sid[0]}***{sid[-2:]}" if len(sid) > 3 else sid
+    return f"{sid[0]}***{sid[-2:]}" if len(sid) > 3 else "***"
 
 
 def convert_date(s: str) -> str:
@@ -217,80 +218,73 @@ class CastleClient:
     async def check_server_stopped(self, sid: str) -> bool:
         """检查服务器是否关机（在 /servers 页面）"""
         try:
-            # 查找启动按钮 - 有启动按钮说明服务器已关机
-            # <button onclick="sendAction(117954,'start')" class="btn btn-icon btn-black icon-server-bstop">
             start_btn = self.page.locator(f'button.icon-server-bstop[onclick*="sendAction({sid},\'start\')"]')
             if await start_btn.count() > 0:
-                return True  # 服务器已停止
-            return False  # 服务器运行中
+                return True
+            return False
         except:
             return False
 
-async def start_server_via_api(self, sid: str) -> bool:
-    """通过调用JS函数启动服务器"""
-    masked = mask_id(sid)
-    try:
-        # 确保在 /servers 页面
-        if "/servers" not in self.page.url or "/control" in self.page.url or "/pay" in self.page.url:
-            await self.page.goto(f"{self.BASE}/servers", wait_until="networkidle")
-            await self.page.wait_for_timeout(2000)
+    async def start_server_via_api(self, sid: str) -> bool:
+        """通过调用JS函数启动服务器"""
+        masked = mask_id(sid)
+        try:
+            if "/servers" not in self.page.url or "/control" in self.page.url or "/pay" in self.page.url:
+                await self.page.goto(f"{self.BASE}/servers", wait_until="networkidle")
+                await self.page.wait_for_timeout(2000)
 
-        # 检查是否已运行
-        if not await self.check_server_stopped(sid):
-            logger.info(f"✅ 服务器 {masked} 已在运行")
-            return False
+            if not await self.check_server_stopped(sid):
+                logger.info(f"✅ 服务器 {masked} 已在运行")
+                return False
 
-        logger.info(f"🔴 服务器 {masked} 已关机，正在启动...")
+            logger.info(f"🔴 服务器 {masked} 已关机，正在启动...")
 
-        # 监听 API 响应
-        response_data = {}
+            response_data = {}
 
-        async def handle_response(response):
-            if f"/servers/control/action/{sid}/start" in response.url:
-                try:
-                    response_data['result'] = await response.json()
-                    logger.info(f"📡 启动API响应: {response_data['result']}")
-                except:
+            async def handle_response(response):
+                if "/servers/control/action/" in response.url and "/start" in response.url:
                     try:
-                        response_data['text'] = await response.text()
+                        response_data['result'] = await response.json()
+                        logger.info(f"📡 启动API响应: {response_data['result']}")
                     except:
-                        pass
+                        try:
+                            response_data['text'] = await response.text()
+                        except:
+                            pass
 
-        self.page.on("response", handle_response)
+            self.page.on("response", handle_response)
 
-        # 调用页面上的 sendAction 函数
-        logger.info(f"🔄 发送启动指令...")  # ← 修复：不再输出ID
-        await self.page.evaluate(f"sendAction({sid}, 'start')")
+            logger.info(f"🔄 发送启动指令...")
+            await self.page.evaluate(f"sendAction({sid}, 'start')")
 
-        # 等待响应
-        await self.page.wait_for_timeout(5000)
+            await self.page.wait_for_timeout(5000)
 
-        self.page.remove_listener("response", handle_response)
+            self.page.remove_listener("response", handle_response)
 
-        result = response_data.get('result', {})
-        if result.get('status') == 'success':
-            logger.info(f"🟢 服务器 {masked} 启动成功")
-            await self.page.wait_for_timeout(3000)
-            await self.page.goto(f"{self.BASE}/servers", wait_until="networkidle")
-            await self.page.wait_for_timeout(2000)
-            return True
-        elif result.get('status') == 'error':
-            logger.warning(f"⚠️ 启动失败: {result.get('error', '未知错误')}")
-            return False
-        else:
-            text = response_data.get('text', '')
-            if 'success' in text.lower():
-                logger.info(f"🟢 服务器 {masked} 启动指令已发送")
+            result = response_data.get('result', {})
+            if result.get('status') == 'success':
+                logger.info(f"🟢 服务器 {masked} 启动成功")
                 await self.page.wait_for_timeout(3000)
                 await self.page.goto(f"{self.BASE}/servers", wait_until="networkidle")
                 await self.page.wait_for_timeout(2000)
                 return True
-            logger.warning(f"⚠️ 启动响应未知")
-            return False
+            elif result.get('status') == 'error':
+                logger.warning(f"⚠️ 启动失败: {result.get('error', '未知错误')}")
+                return False
+            else:
+                text = response_data.get('text', '')
+                if 'success' in text.lower():
+                    logger.info(f"🟢 服务器 {masked} 启动指令已发送")
+                    await self.page.wait_for_timeout(3000)
+                    await self.page.goto(f"{self.BASE}/servers", wait_until="networkidle")
+                    await self.page.wait_for_timeout(2000)
+                    return True
+                logger.warning(f"⚠️ 启动响应未知")
+                return False
 
-    except Exception as e:
-        logger.error(f"❌ 启动服务器 {masked} 失败: {e}")
-    return False
+        except Exception as e:
+            logger.error(f"❌ 启动服务器 {masked} 失败: {e}")
+        return False
 
     async def renew(self, sid: str) -> Tuple[RenewalStatus, str, str, str, int]:
         """续约服务器"""
@@ -300,12 +294,10 @@ async def start_server_via_api(self, sid: str) -> bool:
         days = 0
 
         try:
-            # 访问续约页面
             logger.info(f"📄 访问续约页面...")
             await self.page.goto(f"{self.BASE}/servers/pay/index/{sid}", wait_until="networkidle")
             await self.page.wait_for_timeout(2000)
 
-            # 获取到期时间
             content = await self.page.text_content("body")
             match = re.search(r"(\d{2}\.\d{2}\.\d{4})", content)
             if match:
@@ -313,18 +305,16 @@ async def start_server_via_api(self, sid: str) -> bool:
                 days = days_left(expiry)
                 logger.info(f"📅 到期: {convert_date(expiry)} ({days}天)")
 
-            # 查找续约按钮
             renew_btn = self.page.locator('#freebtn')
             if await renew_btn.count() == 0:
                 logger.error(f"❌ 找不到续约按钮")
                 screenshot_file = await self.take_screenshot(sid, "no_button")
                 return RenewalStatus.FAILED, "找不到续约按钮", screenshot_file, expiry, days
 
-            # 监听响应
             response_data = {}
 
             async def handle_response(response):
-                if f"/servers/pay/buy_months/{sid}" in response.url:
+                if "/servers/pay/buy_months/" in response.url:
                     try:
                         response_data['result'] = await response.json()
                     except:
@@ -332,32 +322,27 @@ async def start_server_via_api(self, sid: str) -> bool:
 
             self.page.on("response", handle_response)
 
-            # 点击续约按钮
             logger.info(f"🖱️ 服务器 {masked} 已请求续约")
             await renew_btn.click()
 
-            # 等待响应
             await self.page.wait_for_timeout(3000)
 
             self.page.remove_listener("response", handle_response)
 
             data = response_data.get('result', {})
 
-            # 检查成功
             if data.get("status") == "success":
                 logger.info(f"📝 结果: ✅ 续约成功")
                 await self.page.wait_for_timeout(1000)
                 screenshot_file = await self.take_screenshot(sid, "success")
                 return RenewalStatus.SUCCESS, "续约成功", screenshot_file, expiry, days
 
-            # 检查页面成功提示
             success_toast = self.page.locator('.iziToast-message:has-text("Успешно")')
             if await success_toast.count() > 0:
                 logger.info(f"📝 结果: ✅ 续约成功")
                 screenshot_file = await self.take_screenshot(sid, "success")
                 return RenewalStatus.SUCCESS, "续约成功", screenshot_file, expiry, days
 
-            # 检查错误
             if data.get("status") == "error":
                 error_msg = data.get("error", "未知错误")
                 m = error_msg.lower()
@@ -381,7 +366,6 @@ async def start_server_via_api(self, sid: str) -> bool:
                 screenshot_file = await self.take_screenshot(sid, "failed")
                 return RenewalStatus.FAILED, error_msg, screenshot_file, expiry, days
 
-            # 未知结果
             logger.info(f"📝 结果: 未知响应")
             screenshot_file = await self.take_screenshot(sid, "unknown")
             return RenewalStatus.FAILED, str(data) if data else "无响应", screenshot_file, expiry, days
@@ -421,7 +405,6 @@ async def process_account(cookie_str: str, idx: int, notifier: Notifier) -> Tupl
         results: List[ServerResult] = []
 
         try:
-            # 获取服务器列表（同时会访问 /servers 页面）
             server_ids = await client.get_server_ids()
             if not server_ids:
                 if "login" in page.url:
@@ -438,20 +421,16 @@ async def process_account(cookie_str: str, idx: int, notifier: Notifier) -> Tupl
                 masked = mask_id(sid)
                 logger.info(f"--- 处理服务器 {masked} ---")
 
-                # 1. 在 /servers 页面启动服务器（如果关机）
                 started = await client.start_server_via_api(sid)
 
-                # 2. 续约
                 status, msg, screenshot, expiry, days = await client.renew(sid)
 
                 results.append(ServerResult(sid, status, msg, expiry, days, started, screenshot))
 
-                # 如果还有更多服务器，返回列表页
                 if len(server_ids) > 1 and sid != server_ids[-1]:
                     await page.goto(f"{client.BASE}/servers", wait_until="networkidle")
                     await page.wait_for_timeout(2000)
 
-            # 发送通知
             for r in results:
                 if r.status == RenewalStatus.SUCCESS:
                     status_icon, status_text = "✅", "续约成功"
@@ -461,11 +440,12 @@ async def process_account(cookie_str: str, idx: int, notifier: Notifier) -> Tupl
                     status_icon, status_text = "❌", f"续约失败: {r.message}"
 
                 started_line = "🟢 服务器已启动\n" if r.started else ""
+                masked_id = mask_id(r.server_id)
                 caption = (
                     f"🖥️ Castle-Host 自动续约\n\n"
                     f"状态: {status_icon} {status_text}\n"
                     f"账号: #{idx + 1}\n\n"
-                    f"💻 服务器: {r.server_id}\n"
+                    f"💻 服务器: {masked_id}\n"
                     f"📅 到期: {convert_date(r.expiry)}\n"
                     f"⏳ 剩余: {r.days} 天\n"
                     f"{started_line}\n"
