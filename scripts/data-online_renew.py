@@ -5,17 +5,24 @@ import httpx
 from datetime import datetime
 from playwright.async_api import async_playwright
 
-async def send_telegram_notification(bot_token, chat_id, username, screenshot_path, success=True):
+async def send_telegram_notification(bot_token, chat_id, username, screenshot_path, status="success", error_msg=None):
     """发送 Telegram 通知"""
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-    status = "✅ 完成" if success else "❌ 失败"
+    
+    if status == "success":
+        status_text = "✅ 完成"
+    elif status == "disabled":
+        status_text = "🚫 账户已禁用"
+    elif status == "wrong_password":
+        status_text = "🔑 密码错误"
+    else:
+        status_text = f"❌ 失败: {error_msg or '未知错误'}"
     
     message = f"""🎁 Data Online 重启报告
 ⏰ {current_time}
 ━━━━━━━━━━━━━━━━━━
-📅
 ├ 👤 账号: {username}
-└ 重启: {status}"""
+└ 状态: {status_text}"""
     
     async with httpx.AsyncClient() as client:
         url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
@@ -35,48 +42,33 @@ async def send_telegram_notification(bot_token, chat_id, username, screenshot_pa
             else:
                 print(f"❌ Telegram 通知发送失败: {response.text}")
 
-async def wait_for_login_success(page, timeout=30000):
-    """等待登录成功，返回 True/False"""
+async def check_login_status(page):
+    """检查登录状态，返回状态码和消息"""
+    current_url = page.url
+    
+    # 检查URL中的特殊状态
+    if 'account-disabled' in current_url:
+        return 'disabled', '账户已禁用'
+    
+    if 'wrong-password' in current_url or 'invalid' in current_url:
+        return 'wrong_password', '密码错误'
+    
+    if '/login' not in current_url:
+        return 'success', '登录成功'
+    
+    # 检查页面上的错误消息
     try:
-        # 方法1: 等待URL变化（离开登录页面）
-        await page.wait_for_function(
-            "() => !window.location.pathname.includes('/login')",
-            timeout=timeout
-        )
-        return True
+        page_text = await page.text_content('body')
+        if page_text:
+            page_text_lower = page_text.lower()
+            if 'disabled' in page_text_lower or '禁用' in page_text:
+                return 'disabled', '账户已禁用'
+            if 'wrong password' in page_text_lower or 'invalid' in page_text_lower:
+                return 'wrong_password', '密码错误'
     except:
         pass
     
-    try:
-        # 方法2: 检查是否出现用户菜单或仪表盘元素
-        await page.wait_for_selector('.user-menu, .dashboard, .sidebar, nav', timeout=5000)
-        return True
-    except:
-        pass
-    
-    return False
-
-async def check_login_error(page):
-    """检查是否有登录错误消息"""
-    error_selectors = [
-        '.error-message',
-        '.alert-error',
-        '.notification-error',
-        '[class*="error"]',
-        '[class*="Error"]'
-    ]
-    
-    for selector in error_selectors:
-        try:
-            element = page.locator(selector).first
-            if await element.is_visible(timeout=1000):
-                text = await element.text_content()
-                if text:
-                    return text.strip()
-        except:
-            continue
-    
-    return None
+    return 'pending', '等待中'
 
 async def main():
     # 从环境变量获取凭据
@@ -91,7 +83,9 @@ async def main():
     
     base_url = "https://sv66.dataonline.vn:2222"
     command = 'pgrep -f "npm" >/dev/null || nohup ./npm -c config.yml >/dev/null 2>&1 &'
-    login_success = False
+    final_status = "failed"
+    error_message = None
+    screenshot_file = "error_screenshot.png"
     
     async with async_playwright() as p:
         print("🚀 启动浏览器...")
@@ -121,12 +115,13 @@ async def main():
             except:
                 print("  ❌ 登录表单未找到")
                 await page.screenshot(path="error_no_form.png")
+                screenshot_file = "error_no_form.png"
                 raise Exception("登录表单未加载")
             
             await page.screenshot(path="0_login_page.png")
             print("📸 登录页面截图已保存")
             
-            # 尝试多种选择器填写用户名
+            # 填写用户名
             print("🔐 正在登录...")
             username_filled = False
             username_selectors = [
@@ -143,23 +138,22 @@ async def main():
                     element = page.locator(selector).first
                     if await element.is_visible(timeout=2000):
                         await element.click()
-                        await element.fill('')  # 清空
-                        await element.type(username, delay=50)  # 逐字符输入
-                        
-                        # 验证是否填写成功
+                        await element.fill('')
+                        await element.type(username, delay=50)
                         value = await element.input_value()
                         if value == username:
-                            print(f"  ✅ 用户名已填写: {username} (使用选择器: {selector})")
+                            print(f"  ✅ 用户名已填写: {username}")
                             username_filled = True
                             break
-                except Exception as e:
+                except:
                     continue
             
             if not username_filled:
                 await page.screenshot(path="error_username.png")
+                screenshot_file = "error_username.png"
                 raise Exception("无法填写用户名")
             
-            # 尝试多种选择器填写密码
+            # 填写密码
             password_filled = False
             password_selectors = [
                 '#password input',
@@ -174,33 +168,27 @@ async def main():
                     element = page.locator(selector).first
                     if await element.is_visible(timeout=2000):
                         await element.click()
-                        await element.fill('')  # 清空
-                        await element.type(password, delay=50)  # 逐字符输入
-                        
-                        # 验证是否填写成功
+                        await element.fill('')
+                        await element.type(password, delay=50)
                         value = await element.input_value()
                         if len(value) > 0:
-                            print(f"  ✅ 密码已填写 (使用选择器: {selector})")
+                            print(f"  ✅ 密码已填写")
                             password_filled = True
                             break
-                except Exception as e:
+                except:
                     continue
             
             if not password_filled:
                 await page.screenshot(path="error_password.png")
+                screenshot_file = "error_password.png"
                 raise Exception("无法填写密码")
             
-            await page.screenshot(path="1_before_submit.png")
-            
             # 点击登录按钮
-            submit_clicked = False
             submit_selectors = [
                 'button[type="submit"]',
                 'button:has-text("Sign in")',
                 'button:has-text("Login")',
-                'button:has-text("登录")',
-                '.Button[type="submit"]',
-                'button.Button'
+                '.Button[type="submit"]'
             ]
             
             for selector in submit_selectors:
@@ -208,131 +196,128 @@ async def main():
                     element = page.locator(selector).first
                     if await element.is_visible(timeout=2000):
                         await element.click()
-                        print(f"  ✅ 点击登录按钮 (使用选择器: {selector})")
-                        submit_clicked = True
+                        print(f"  ✅ 点击登录按钮")
                         break
                 except:
                     continue
             
-            if not submit_clicked:
-                # 尝试按 Enter 键提交
-                await page.keyboard.press('Enter')
-                print("  ⚠️ 使用 Enter 键提交")
-            
-            # 等待并验证登录结果
+            # 等待并检查登录结果
             print("⏳ 等待登录响应...")
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             
-            # 检查登录是否成功
+            # 检查登录状态
             max_retries = 10
             for i in range(max_retries):
                 await asyncio.sleep(1)
+                status, message = await check_login_status(page)
                 current_url = page.url
-                print(f"  🔍 当前URL: {current_url}")
+                print(f"  🔍 状态: {status} - {message} (URL: {current_url})")
                 
-                # 检查是否还在登录页面
-                if '/login' not in current_url:
-                    print("  ✅ 登录成功! URL已变化")
-                    login_success = True
+                if status == 'disabled':
+                    print("  🚫 账户已禁用!")
+                    final_status = "disabled"
+                    await page.screenshot(path="account_disabled.png")
+                    screenshot_file = "account_disabled.png"
                     break
                 
-                # 检查是否有错误消息
-                error_msg = await check_login_error(page)
-                if error_msg:
-                    print(f"  ❌ 登录失败: {error_msg}")
-                    await page.screenshot(path="error_login_failed.png")
-                    raise Exception(f"登录失败: {error_msg}")
+                elif status == 'wrong_password':
+                    print("  🔑 密码错误!")
+                    final_status = "wrong_password"
+                    await page.screenshot(path="wrong_password.png")
+                    screenshot_file = "wrong_password.png"
+                    break
+                
+                elif status == 'success':
+                    print("  ✅ 登录成功!")
+                    final_status = "success"
+                    break
                 
                 if i == max_retries - 1:
-                    print("  ❌ 登录超时，仍在登录页面")
+                    print("  ⚠️ 登录超时")
+                    error_message = "登录超时"
             
-            await page.screenshot(path="2_after_login.png")
-            print("📸 登录后截图已保存")
+            await page.screenshot(path="after_login.png")
             
-            if not login_success:
-                raise Exception("登录失败：超时后仍在登录页面")
+            # 如果账户禁用或密码错误，直接结束
+            if final_status in ['disabled', 'wrong_password']:
+                print(f"⚠️ 无法继续执行: {final_status}")
             
-            # 访问终端页面
-            terminal_url = f"{base_url}/evo/user/terminal"
-            print(f"📺 访问终端: {terminal_url}")
-            await page.goto(terminal_url, timeout=60000)
-            await page.wait_for_load_state('networkidle')
+            # 只有登录成功才继续执行终端操作
+            elif final_status == 'success':
+                # 访问终端页面
+                terminal_url = f"{base_url}/evo/user/terminal"
+                print(f"📺 访问终端: {terminal_url}")
+                await page.goto(terminal_url, timeout=60000)
+                await page.wait_for_load_state('networkidle')
+                
+                await asyncio.sleep(2)
+                if '/login' in page.url:
+                    print("  ❌ 被重定向到登录页")
+                    final_status = "failed"
+                    error_message = "会话失效"
+                else:
+                    print("  ✅ 成功进入终端页面")
+                    await asyncio.sleep(5)
+                    await page.screenshot(path="terminal_page.png")
+                    
+                    # 执行命令
+                    print(f"⌨️ 执行命令: {command}")
+                    
+                    for selector in ['.xterm', '.xterm-screen', '.terminal', 'canvas']:
+                        try:
+                            element = page.locator(selector).first
+                            if await element.is_visible(timeout=3000):
+                                await element.click()
+                                print(f"  ✅ 已点击终端区域")
+                                break
+                        except:
+                            continue
+                    else:
+                        await page.mouse.click(640, 400)
+                    
+                    await asyncio.sleep(1)
+                    await page.keyboard.type(command, delay=30)
+                    await asyncio.sleep(0.5)
+                    await page.keyboard.press('Enter')
+                    print("  ✅ 命令已发送")
+                    
+                    await asyncio.sleep(5)
+                    await page.screenshot(path="final_result.png")
+                    screenshot_file = "final_result.png"
+                    print("📸 最终结果截图已保存")
             
-            # 再次检查是否被重定向到登录页
-            await asyncio.sleep(2)
-            if '/login' in page.url:
-                print("  ❌ 被重定向到登录页，登录状态丢失")
-                await page.screenshot(path="error_redirected.png")
-                raise Exception("访问终端时被重定向到登录页")
-            
-            print("  ✅ 成功进入终端页面")
-            await asyncio.sleep(5)
-            await page.screenshot(path="3_terminal_page.png")
-            print("📸 终端页面截图已保存")
-            
-            # 执行命令
-            print(f"⌨️ 执行命令: {command}")
-            
-            # 尝试点击终端区域
-            terminal_clicked = False
-            for selector in ['.xterm', '.xterm-screen', '.terminal', 'canvas', '.xterm-helper-textarea']:
-                try:
-                    element = page.locator(selector).first
-                    if await element.is_visible(timeout=3000):
-                        await element.click()
-                        print(f"  ✅ 已点击终端区域: {selector}")
-                        terminal_clicked = True
-                        break
-                except:
-                    continue
-            
-            if not terminal_clicked:
-                # 点击页面中心
-                await page.mouse.click(640, 400)
-                print("  ⚠️ 使用坐标点击页面中心")
-            
-            await asyncio.sleep(1)
-            
-            # 输入命令
-            await page.keyboard.type(command, delay=30)
-            await asyncio.sleep(0.5)
-            await page.keyboard.press('Enter')
-            print("  ✅ 命令已发送")
-            
-            await asyncio.sleep(5)
-            await page.screenshot(path="final_result.png")
-            print("📸 最终结果截图已保存")
-            
-            print("✅ 脚本执行完成!")
+            print(f"📋 最终状态: {final_status}")
             
         except Exception as e:
             print(f"❌ 发生错误: {str(e)}")
-            await page.screenshot(path="error_screenshot.png")
-            
-            # 发送失败通知
-            if tg_bot_token and tg_chat_id:
-                await send_telegram_notification(
-                    tg_bot_token, 
-                    tg_chat_id, 
-                    username, 
-                    "error_screenshot.png",
-                    success=False
-                )
-            raise
+            error_message = str(e)
+            try:
+                await page.screenshot(path="error_screenshot.png")
+            except:
+                pass
+        
         finally:
             await browser.close()
         
-        # 发送成功通知
-        if login_success and tg_bot_token and tg_chat_id:
+        # 发送 Telegram 通知
+        if tg_bot_token and tg_chat_id:
             await send_telegram_notification(
                 tg_bot_token, 
                 tg_chat_id, 
                 username, 
-                "final_result.png",
-                success=True
+                screenshot_file,
+                status=final_status,
+                error_msg=error_message
             )
-        elif not tg_bot_token or not tg_chat_id:
+        else:
             print("⚠️ 未设置 Telegram 配置，跳过通知")
+        
+        # 账户禁用不算脚本失败，正常退出
+        if final_status in ['disabled', 'wrong_password']:
+            print(f"⚠️ 脚本结束: {final_status}")
+            exit(0)
+        elif final_status != 'success':
+            exit(1)
 
 if __name__ == '__main__':
     asyncio.run(main())
