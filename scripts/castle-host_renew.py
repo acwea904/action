@@ -226,74 +226,71 @@ class CastleClient:
         except:
             return False
 
-    async def start_server_via_api(self, sid: str) -> bool:
-        """通过调用JS函数启动服务器"""
-        masked = mask_id(sid)
-        try:
-            # 确保在 /servers 页面
-            if "/servers" not in self.page.url or "/control" in self.page.url or "/pay" in self.page.url:
-                await self.page.goto(f"{self.BASE}/servers", wait_until="networkidle")
-                await self.page.wait_for_timeout(2000)
+async def start_server_via_api(self, sid: str) -> bool:
+    """通过调用JS函数启动服务器"""
+    masked = mask_id(sid)
+    try:
+        # 确保在 /servers 页面
+        if "/servers" not in self.page.url or "/control" in self.page.url or "/pay" in self.page.url:
+            await self.page.goto(f"{self.BASE}/servers", wait_until="networkidle")
+            await self.page.wait_for_timeout(2000)
 
-            # 检查是否已运行
-            if not await self.check_server_stopped(sid):
-                logger.info(f"✅ 服务器 {masked} 已在运行")
-                return False
+        # 检查是否已运行
+        if not await self.check_server_stopped(sid):
+            logger.info(f"✅ 服务器 {masked} 已在运行")
+            return False
 
-            logger.info(f"🔴 服务器 {masked} 已关机，正在启动...")
+        logger.info(f"🔴 服务器 {masked} 已关机，正在启动...")
 
-            # 监听 API 响应
-            response_data = {}
+        # 监听 API 响应
+        response_data = {}
 
-            async def handle_response(response):
-                if f"/servers/control/action/{sid}/start" in response.url:
+        async def handle_response(response):
+            if f"/servers/control/action/{sid}/start" in response.url:
+                try:
+                    response_data['result'] = await response.json()
+                    logger.info(f"📡 启动API响应: {response_data['result']}")
+                except:
                     try:
-                        response_data['result'] = await response.json()
-                        logger.info(f"📡 启动API响应: {response_data['result']}")
+                        response_data['text'] = await response.text()
                     except:
-                        try:
-                            response_data['text'] = await response.text()
-                        except:
-                            pass
+                        pass
 
-            self.page.on("response", handle_response)
+        self.page.on("response", handle_response)
 
-            # 调用页面上的 sendAction 函数
-            logger.info(f"🔄 调用 sendAction({sid}, 'start')...")
-            await self.page.evaluate(f"sendAction({sid}, 'start')")
+        # 调用页面上的 sendAction 函数
+        logger.info(f"🔄 发送启动指令...")  # ← 修复：不再输出ID
+        await self.page.evaluate(f"sendAction({sid}, 'start')")
 
-            # 等待响应
-            await self.page.wait_for_timeout(5000)
+        # 等待响应
+        await self.page.wait_for_timeout(5000)
 
-            self.page.remove_listener("response", handle_response)
+        self.page.remove_listener("response", handle_response)
 
-            result = response_data.get('result', {})
-            if result.get('status') == 'success':
-                logger.info(f"🟢 服务器 {masked} 启动成功: {result.get('success', '')}")
-                # 等待页面自动刷新（JS里有 setTimeout("reload()", 1500)）
+        result = response_data.get('result', {})
+        if result.get('status') == 'success':
+            logger.info(f"🟢 服务器 {masked} 启动成功")
+            await self.page.wait_for_timeout(3000)
+            await self.page.goto(f"{self.BASE}/servers", wait_until="networkidle")
+            await self.page.wait_for_timeout(2000)
+            return True
+        elif result.get('status') == 'error':
+            logger.warning(f"⚠️ 启动失败: {result.get('error', '未知错误')}")
+            return False
+        else:
+            text = response_data.get('text', '')
+            if 'success' in text.lower():
+                logger.info(f"🟢 服务器 {masked} 启动指令已发送")
                 await self.page.wait_for_timeout(3000)
-                # 手动刷新确保状态更新
                 await self.page.goto(f"{self.BASE}/servers", wait_until="networkidle")
                 await self.page.wait_for_timeout(2000)
                 return True
-            elif result.get('status') == 'error':
-                logger.warning(f"⚠️ 启动失败: {result.get('error', '未知错误')}")
-                return False
-            else:
-                # 可能响应格式不同，检查文本
-                text = response_data.get('text', '')
-                if 'success' in text.lower():
-                    logger.info(f"🟢 服务器 {masked} 启动指令已发送")
-                    await self.page.wait_for_timeout(3000)
-                    await self.page.goto(f"{self.BASE}/servers", wait_until="networkidle")
-                    await self.page.wait_for_timeout(2000)
-                    return True
-                logger.warning(f"⚠️ 启动响应未知: {text[:200] if text else '无响应'}")
-                return False
+            logger.warning(f"⚠️ 启动响应未知")
+            return False
 
-        except Exception as e:
-            logger.error(f"❌ 启动服务器 {masked} 失败: {e}")
-        return False
+    except Exception as e:
+        logger.error(f"❌ 启动服务器 {masked} 失败: {e}")
+    return False
 
     async def renew(self, sid: str) -> Tuple[RenewalStatus, str, str, str, int]:
         """续约服务器"""
