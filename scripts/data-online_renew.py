@@ -1,4 +1,19 @@
 # scripts/data-online_renew.py
+"""
+Data Online 自动执行终端命令
+
+配置变量说明:
+- 单账号变量:
+    - DATA_USERNAME	登录用户名
+    - DATA_PASSWORD	登录密码
+    
+- 命令变量 (可选):
+    - DATA_COMMAND 执行的命令
+    
+- 通知变量 (可选):
+    - TG_BOT_TOKEN=Telegram 机器人 Token
+    - TG_CHAT_ID=Telegram 聊天 ID
+"""
 import asyncio
 import os
 import httpx
