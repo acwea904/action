@@ -1070,7 +1070,7 @@ def main():
                     else:
                         try:
                             before_num = int(renewal_count_before.split("/")[0]) if "/" in str(renewal_count_before) else int(renewal_count_before)
-                            after_num = int(new_renewal_count.split("/")[0]) if "/" in str(new_renewal_count) else 0
+                            after_num = int(new_renewal_count.split("/")[0]) if "/" in str(new_renewal_count) else int(new_renewal_count)
                             
                             if after_num > before_num:
                                 final_success = True
