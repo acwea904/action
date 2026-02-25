@@ -547,53 +547,58 @@ def check_access_blocked(sb) -> bool:
 
 
 def check_page_error(sb) -> Optional[str]:
-    """检查页面是否有错误"""
+    """
+    检查页面是否有浏览器级别错误（Chrome 错误页面）
+    只检测真正的浏览器错误，不检测网站内容
+    """
     try:
         error = sb.execute_script("""
-            var bodyText = (document.body.innerText || '').toLowerCase();
-            var title = (document.title || '').toLowerCase();
+            // Chrome 错误页面有特定的 DOM 结构
+            var isErrorPage = (
+                document.querySelector('body.neterror') !== null ||
+                document.getElementById('main-frame-error') !== null ||
+                document.querySelector('.interstitial-wrapper') !== null ||
+                document.querySelector('div[jscontent="errorCode"]') !== null ||
+                // Chrome "This site can't be reached" 页面
+                document.querySelector('#main-message') !== null && 
+                document.body.innerText.includes("can't be reached")
+            );
             
-            // 重定向错误
+            // 如果不是错误页面，直接返回 null
+            if (!isErrorPage) {
+                return null;
+            }
+            
+            // 是错误页面，检查具体错误类型
+            var bodyText = (document.body.innerText || '').toLowerCase();
+            
             if (bodyText.includes('err_too_many_redirects') || 
-                bodyText.includes('redirected you too many times') ||
-                bodyText.includes('redirect loop')) {
+                bodyText.includes('redirected you too many times')) {
                 return 'TOO_MANY_REDIRECTS';
             }
             
-            // 页面不工作
-            if (bodyText.includes("page isn't working") ||
-                bodyText.includes('page is not working')) {
-                return 'PAGE_NOT_WORKING';
-            }
-            
-            // 连接错误
-            if (bodyText.includes('err_connection') || 
-                bodyText.includes('connection refused') ||
-                bodyText.includes('err_timed_out')) {
+            if (bodyText.includes('err_connection')) {
                 return 'CONNECTION_ERROR';
             }
             
-            // 访问被阻止
-            if (bodyText.includes('access denied') || 
-                bodyText.includes('access restricted') ||
-                bodyText.includes('unusual network activity')) {
-                return 'ACCESS_BLOCKED';
+            if (bodyText.includes('err_timed_out') || bodyText.includes('timed out')) {
+                return 'TIMEOUT_ERROR';
             }
             
-            // 404
-            if ((bodyText.includes('404') || title.includes('404')) && 
-                (bodyText.includes('not found') || title.includes('not found'))) {
-                return 'NOT_FOUND';
+            if (bodyText.includes('err_ssl') || bodyText.includes('err_cert')) {
+                return 'SSL_ERROR';
             }
             
-            // 服务器错误
-            if (bodyText.includes('500') || bodyText.includes('internal server error') ||
-                bodyText.includes('502') || bodyText.includes('bad gateway') ||
-                bodyText.includes('503') || bodyText.includes('service unavailable')) {
-                return 'SERVER_ERROR';
+            if (bodyText.includes('err_name_not_resolved')) {
+                return 'DNS_ERROR';
             }
             
-            return null;
+            if (bodyText.includes("can't be reached") || bodyText.includes("isn't working")) {
+                return 'PAGE_NOT_WORKING';
+            }
+            
+            // 是错误页面但无法识别具体类型
+            return 'BROWSER_ERROR';
         """)
         return error
     except:
