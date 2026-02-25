@@ -894,226 +894,224 @@ def main():
                     
                     notify_telegram(True, "检查完成", result_message, final_screenshot)
                 else:
-                    # 7. 开始续订流程
-                    log("INFO", "✨ 续订按钮可用，开始续订流程...")
+                    # 7. 开始循环续订流程
+                    log("INFO", "✨ 续订按钮可用，开始循环续订流程...")
                     
-                    renewal_count_before = renewal_count
+                    total_renewed = 0
+                    max_renewals = 7  # 最多尝试续订次数
+                    initial_count = renewal_count
                     
-                    sb.execute_script("""
-                        var btn = document.getElementById('renewServerBtn');
-                        if (btn) btn.click();
-                    """)
-                    log("INFO", "已点击续订按钮，等待模态框...")
-                    time.sleep(2)
-                    
-                    sp_modal = screenshot_path("03-modal")
-                    sb.save_screenshot(sp_modal)
-                    final_screenshot = sp_modal
-                    
-                    modal_visible = sb.execute_script("""
-                        var modal = document.getElementById('renewalModal');
-                        if (!modal) return false;
-                        var style = window.getComputedStyle(modal);
-                        return style.display !== 'none';
-                    """)
-                    
-                    if modal_visible:
-                        log("INFO", "📋 续订模态框已打开")
-                    
-                    # 8. 处理 Turnstile
-                    log("INFO", "⏳ 处理 Turnstile 验证...")
-                    
-                    try:
-                        sb.uc_gui_click_captcha()
-                        time.sleep(3)
-                    except:
-                        pass
-                    
-                    handle_turnstile(sb)
-                    
-                    sp_turnstile = screenshot_path("04-turnstile")
-                    sb.save_screenshot(sp_turnstile)
-                    final_screenshot = sp_turnstile
-                    
-                    # 9. 点击广告
-                    log("INFO", "🖱️ 点击广告横幅...")
-                    
-                    main_window = sb.driver.current_window_handle
-                    original_windows = set(sb.driver.window_handles)
-                    
-                    sb.execute_script("""
-                        var adBanner = document.getElementById('adBanner');
-                        if (adBanner) {
-                            var parent = adBanner.closest('[onclick]') || adBanner.parentElement;
-                            if (parent) parent.click();
-                            else adBanner.click();
-                        }
-                    """)
-                    
-                    time.sleep(3)
-                    
-                    # 关闭广告新窗口
-                    new_windows = set(sb.driver.window_handles) - original_windows
-                    if new_windows:
-                        log("INFO", f"检测到 {len(new_windows)} 个新窗口，正在关闭...")
-                        for win in new_windows:
-                            try:
-                                sb.driver.switch_to.window(win)
-                                sb.driver.close()
-                            except:
-                                pass
-                        sb.driver.switch_to.window(main_window)
-                        log("INFO", "已关闭广告窗口")
-                    
-                    log("INFO", "已切回主窗口")
-                    time.sleep(2)
-                    
-                    sp_after_ad = screenshot_path("05-after-ad")
-                    sb.save_screenshot(sp_after_ad)
-                    final_screenshot = sp_after_ad
-                    
-                    current_url = sb.get_current_url()
-                    log("INFO", f"当前 URL: {current_url}")
-                    
-                    # 10. 设置网络拦截
-                    setup_network_interception(sb)
-                    
-                    # 11. 点击最终续订按钮
-                    log("INFO", "🔘 点击最终续订按钮...")
-                    
-                    renew_btn_ready = sb.execute_script("""
-                        var btn = document.getElementById('renewBtn');
-                        if (!btn) return {exists: false};
-                        return {
-                            exists: true,
-                            disabled: btn.disabled,
-                            visible: btn.offsetParent !== null
-                        };
-                    """)
-                    
-                    log("INFO", f"续订按钮状态: {renew_btn_ready}")
-                    
-                    if renew_btn_ready and renew_btn_ready.get("exists") and not renew_btn_ready.get("disabled"):
+                    for renewal_round in range(1, max_renewals + 1):
+                        log("INFO", f"{'='*20} 第 {renewal_round} 轮续订 {'='*20}")
+                        
+                        # 检查按钮是否还可用
+                        renew_server_btn_disabled = sb.execute_script("""
+                            var btn = document.getElementById('renewServerBtn');
+                            if (!btn) return true;
+                            return btn.disabled || btn.hasAttribute('disabled');
+                        """)
+                        
+                        if renew_server_btn_disabled:
+                            log("INFO", "续订按钮已禁用，停止续订")
+                            break
+                        
+                        # 点击续订按钮打开模态框
                         sb.execute_script("""
-                            var btn = document.getElementById('renewBtn');
-                            if (btn && !btn.disabled) {
-                                btn.click();
+                            var btn = document.getElementById('renewServerBtn');
+                            if (btn) btn.click();
+                        """)
+                        log("INFO", "已点击续订按钮，等待模态框...")
+                        time.sleep(2)
+                        
+                        # 检查模态框
+                        modal_visible = sb.execute_script("""
+                            var modal = document.getElementById('renewalModal');
+                            if (!modal) return false;
+                            var style = window.getComputedStyle(modal);
+                            return style.display !== 'none';
+                        """)
+                        
+                        if not modal_visible:
+                            log("WARN", "模态框未打开，跳过本轮")
+                            continue
+                        
+                        log("INFO", "📋 续订模态框已打开")
+                        
+                        # 处理 Turnstile
+                        try:
+                            sb.uc_gui_click_captcha()
+                            time.sleep(2)
+                        except:
+                            pass
+                        
+                        handle_turnstile(sb)
+                        
+                        # 点击广告
+                        log("INFO", "🖱️ 点击广告横幅...")
+                        main_window = sb.driver.current_window_handle
+                        original_windows = set(sb.driver.window_handles)
+                        
+                        sb.execute_script("""
+                            var adBanner = document.getElementById('adBanner');
+                            if (adBanner) {
+                                var parent = adBanner.closest('[onclick]') || adBanner.parentElement;
+                                if (parent) parent.click();
+                                else adBanner.click();
                             }
                         """)
-                        log("INFO", "已点击 renewBtn")
-                    else:
-                        log("WARN", "renewBtn 不可用，尝试提交表单...")
-                        sb.execute_script("""
-                            var form = document.querySelector('#renewalModal form');
-                            if (form) form.submit();
+                        
+                        time.sleep(3)
+                        
+                        # 关闭广告窗口
+                        new_windows = set(sb.driver.window_handles) - original_windows
+                        if new_windows:
+                            log("INFO", f"关闭 {len(new_windows)} 个广告窗口")
+                            for win in new_windows:
+                                try:
+                                    sb.driver.switch_to.window(win)
+                                    sb.driver.close()
+                                except:
+                                    pass
+                            sb.driver.switch_to.window(main_window)
+                        
+                        time.sleep(1)
+                        
+                        # 点击最终续订按钮
+                        log("INFO", "🔘 点击最终续订按钮...")
+                        
+                        renew_btn_ready = sb.execute_script("""
+                            var btn = document.getElementById('renewBtn');
+                            if (!btn) return {exists: false};
+                            return {
+                                exists: true,
+                                disabled: btn.disabled,
+                                visible: btn.offsetParent !== null
+                            };
                         """)
-                    
-                    # 等待 API 响应
-                    time.sleep(5)
-                    
-                    sp_after_renew = screenshot_path("06-after-renew")
-                    sb.save_screenshot(sp_after_renew)
-                    final_screenshot = sp_after_renew
-                    
-                    # 12. 检查续订结果
-                    result = check_renewal_result(sb)
-                    log("INFO", f"续订结果检查: {result['status']}")
-                    
-                    if result.get("api_status"):
-                        log("INFO", f"API 状态码: {result['api_status']}")
-                    if result.get("message"):
-                        log("INFO", f"结果消息: {result['message']}")
-                    
-                    # 13. 获取最新状态
-                    time.sleep(2)
-                    
-                    try:
+                        
+                        if renew_btn_ready and renew_btn_ready.get("exists") and not renew_btn_ready.get("disabled"):
+                            sb.execute_script("""
+                                var btn = document.getElementById('renewBtn');
+                                if (btn && !btn.disabled) btn.click();
+                            """)
+                            log("INFO", "已点击 renewBtn")
+                        else:
+                            log("WARN", "renewBtn 不可用，尝试提交表单...")
+                            sb.execute_script("""
+                                var form = document.querySelector('#renewalModal form');
+                                if (form) form.submit();
+                            """)
+                        
+                        # 等待响应
+                        time.sleep(3)
+                        
+                        # 检查是否达到限制（通过 toast 或页面提示）
+                        limit_reached = sb.execute_script("""
+                            var bodyText = document.body.innerText || '';
+                            return bodyText.includes('Cannot exceed 7 days') ||
+                                   bodyText.includes('exceed 7 days') ||
+                                   bodyText.includes('maximum') ||
+                                   bodyText.includes('limit reached');
+                        """)
+                        
+                        if limit_reached:
+                            log("INFO", "⚠️ 检测到已达续订限制")
+                            break
+                        
+                        total_renewed += 1
+                        log("INFO", f"✅ 第 {renewal_round} 轮续订完成")
+                        
+                        # 关闭模态框，准备下一轮
                         sb.execute_script("""
-                            var closeBtn = document.querySelector('#renewalModal .close, [data-dismiss="modal"]');
+                            var closeBtn = document.querySelector('#renewalModal .close, [data-dismiss="modal"], .btn-close');
                             if (closeBtn) closeBtn.click();
+                            var modal = document.getElementById('renewalModal');
+                            if (modal) modal.style.display = 'none';
                             var backdrop = document.querySelector('.modal-backdrop');
                             if (backdrop) backdrop.remove();
+                            document.body.classList.remove('modal-open');
                         """)
-                        time.sleep(1)
+                        
+                        time.sleep(2)
+                        
+                        # 刷新页面获取最新状态
                         sb.refresh()
                         time.sleep(3)
-                    except:
-                        pass
+                        
+                        # 检查当前状态
+                        current_count = sb.execute_script("""
+                            var el = document.getElementById('renewal-count');
+                            return el ? el.textContent.trim() : '0';
+                        """) or "0"
+                        
+                        current_days = sb.execute_script("""
+                            var el = document.querySelector('[class*="TIME_REMAINING"], .time-remaining');
+                            if (el) return el.textContent.trim();
+                            // 备用: 查找包含 "Days" 的元素
+                            var allText = document.body.innerText;
+                            var match = allText.match(/(\\d+)\\s*Days?/i);
+                            return match ? match[1] + ' Days' : '未知';
+                        """) or "未知"
+                        
+                        log("INFO", f"当前状态: 续订次数 {current_count}/7, 剩余时间约 {current_days}")
+                        
+                        # 检查是否达到 7 天
+                        try:
+                            days_num = int(current_days.split()[0]) if current_days != "未知" else 0
+                            if days_num >= 7:
+                                log("INFO", "🎉 已达到 7 天有效期上限!")
+                                break
+                        except:
+                            pass
                     
-                    new_renewal_count = sb.execute_script("""
+                    # 获取最终状态
+                    time.sleep(2)
+                    
+                    final_count = sb.execute_script("""
                         var el = document.getElementById('renewal-count');
                         return el ? el.textContent.trim() : '未知';
                     """) or "未知"
                     
-                    new_status_text = sb.execute_script("""
+                    final_status = sb.execute_script("""
                         var el = document.getElementById('renewal-status-text');
                         return el ? el.textContent.trim() : '未知';
                     """) or "未知"
                     
-                    log("INFO", f"续订后次数: {new_renewal_count}/7")
-                    log("INFO", f"续订后状态: {new_status_text}")
+                    # 获取剩余天数
+                    final_days = sb.execute_script("""
+                        var text = document.body.innerText;
+                        var match = text.match(/(\\d+)\\s*Days?.*?(?:TIME REMAINING|remaining|Auto-shutdown)/i);
+                        return match ? match[1] : '未知';
+                    """) or "未知"
                     
-                    sp_final = screenshot_path("07-final")
+                    log("INFO", f"最终续订次数: {final_count}/7")
+                    log("INFO", f"最终剩余时间: {final_days} Days")
+                    log("INFO", f"本次共续订: {total_renewed} 次")
+                    
+                    sp_final = screenshot_path("99-final")
                     sb.save_screenshot(sp_final)
                     final_screenshot = sp_final
                     
-                    # 14. 判断最终结果
-                    final_success = False
-                    
-                    if result["status"] == "success":
-                        final_success = True
-                        log("INFO", "🎉 续订成功!")
-                    elif result["status"] == "limit_reached":
-                        log("INFO", f"⚠️ 已达续订限制: {result['message']}")
-                    elif result["status"] == "error":
-                        log("ERROR", f"❌ 续订失败: {result['message']}")
-                    else:
-                        # 通过比较次数判断（API 未捕获时的备用方案）
-                        try:
-                            # 解析续订前次数
-                            before_str = str(renewal_count_before)
-                            before_num = int(before_str.split("/")[0]) if "/" in before_str else int(before_str)
-                            
-                            # 解析续订后次数
-                            after_str = str(new_renewal_count)
-                            after_num = int(after_str.split("/")[0]) if "/" in after_str else int(after_str)
-                            
-                            if after_num > before_num:
-                                final_success = True
-                                log("INFO", f"🎉 续订成功! 次数 {before_num} -> {after_num}")
-                            else:
-                                log("INFO", f"次数未变化: {before_num} -> {after_num}")
-                        except (ValueError, AttributeError) as e:
-                            log("WARN", f"无法比较续订次数: {e}")
-                    
-                    # 15. 发送通知
-                    if result["status"] == "limit_reached":
+                    # 发送通知
+                    if total_renewed > 0:
                         result_message = (
-                            f"续订次数: {new_renewal_count}/7\n"
-                            f"状态: {new_status_text}\n\n"
-                            f"⚠️ {result['message']}\n"
-                            f"服务器有效期已满 7 天"
-                        )
-                        notify_telegram(True, "已达限制", result_message, final_screenshot)
-                    elif final_success:
-                        log("INFO", "🎉 续订成功!")
-                        result_message = (
-                            f"续订次数: {new_renewal_count}/7\n"
-                            f"状态: {new_status_text}\n\n"
-                            f"✅ 服务器续订成功!"
+                            f"🎉 *续订成功*\n\n"
+                            f"本次续订: {total_renewed} 次\n"
+                            f"续订次数: {initial_count} → {final_count}/7\n"
+                            f"剩余时间: {final_days} Days\n"
+                            f"状态: {final_status}"
                         )
                         notify_telegram(True, "续订成功", result_message, final_screenshot)
                     else:
-                        log("WARN", "❌ 续订可能失败")
                         result_message = (
-                            f"续订次数: {new_renewal_count}/7\n"
-                            f"状态: {new_status_text}\n\n"
-                            f"❌ 续订失败\n"
-                            f"原因: {result.get('message', '未知')}"
+                            f"续订次数: {final_count}/7\n"
+                            f"剩余时间: {final_days} Days\n"
+                            f"状态: {final_status}\n\n"
+                            f"⚠️ 未能续订，可能已达限制"
                         )
-                        notify_telegram(False, "续订失败", result_message, final_screenshot)
+                        notify_telegram(False, "续订未执行", result_message, final_screenshot)
                     
-                    # 16. 保存 Cookie
+                    # 保存 Cookie
                     log("INFO", "💾 保存 Cookie...")
                     new_cookie_str = save_cookies_for_update(sb)
                     if new_cookie_str:
