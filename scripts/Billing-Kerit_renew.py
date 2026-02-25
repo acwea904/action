@@ -1068,16 +1068,22 @@ def main():
                     elif result["status"] == "error":
                         log("ERROR", f"❌ 续订失败: {result['message']}")
                     else:
+                        # 通过比较次数判断（API 未捕获时的备用方案）
                         try:
-                            before_num = int(renewal_count_before.split("/")[0]) if "/" in str(renewal_count_before) else int(renewal_count_before)
-                            after_num = int(new_renewal_count.split("/")[0]) if "/" in str(new_renewal_count) else int(new_renewal_count)
+                            # 解析续订前次数
+                            before_str = str(renewal_count_before)
+                            before_num = int(before_str.split("/")[0]) if "/" in before_str else int(before_str)
+                            
+                            # 解析续订后次数
+                            after_str = str(new_renewal_count)
+                            after_num = int(after_str.split("/")[0]) if "/" in after_str else int(after_str)
                             
                             if after_num > before_num:
                                 final_success = True
                                 log("INFO", f"🎉 续订成功! 次数 {before_num} -> {after_num}")
                             else:
                                 log("INFO", f"次数未变化: {before_num} -> {after_num}")
-                        except Exception as e:
+                        except (ValueError, AttributeError) as e:
                             log("WARN", f"无法比较续订次数: {e}")
                     
                     # 15. 发送通知
