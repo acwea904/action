@@ -715,7 +715,7 @@ def main():
                     log("ERROR", f"❌ Session 页面错误: {page_error}")
                     
                     if page_error == "TOO_MANY_REDIRECTS":
-                        notify_telegram(False, "Cookie 失效", "重定向次数过多\nCookie 已失效，请重新获取", sp_error)
+                        notify_telegram(False, "Cookie 失效", "重定向次数过多\nCookie 已失效，请重新获取\n注意: 请使用与脚本相同的代理网络获取", sp_error)
                     else:
                         notify_telegram(False, "页面错误", f"错误类型: {page_error}", sp_error)
                     sys.exit(1)
