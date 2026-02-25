@@ -531,6 +531,60 @@ def check_access_blocked(sb) -> bool:
         return False
 
 
+def check_page_error(sb) -> Optional[str]:
+    """检查页面是否有错误"""
+    try:
+        error = sb.execute_script("""
+            var bodyText = (document.body.innerText || '').toLowerCase();
+            var title = (document.title || '').toLowerCase();
+            
+            // 重定向错误
+            if (bodyText.includes('err_too_many_redirects') || 
+                bodyText.includes('redirected you too many times') ||
+                bodyText.includes('redirect loop')) {
+                return 'TOO_MANY_REDIRECTS';
+            }
+            
+            // 页面不工作
+            if (bodyText.includes("page isn't working") ||
+                bodyText.includes('page is not working')) {
+                return 'PAGE_NOT_WORKING';
+            }
+            
+            // 连接错误
+            if (bodyText.includes('err_connection') || 
+                bodyText.includes('connection refused') ||
+                bodyText.includes('err_timed_out')) {
+                return 'CONNECTION_ERROR';
+            }
+            
+            // 访问被阻止
+            if (bodyText.includes('access denied') || 
+                bodyText.includes('access restricted') ||
+                bodyText.includes('unusual network activity')) {
+                return 'ACCESS_BLOCKED';
+            }
+            
+            // 404
+            if ((bodyText.includes('404') || title.includes('404')) && 
+                (bodyText.includes('not found') || title.includes('not found'))) {
+                return 'NOT_FOUND';
+            }
+            
+            // 服务器错误
+            if (bodyText.includes('500') || bodyText.includes('internal server error') ||
+                bodyText.includes('502') || bodyText.includes('bad gateway') ||
+                bodyText.includes('503') || bodyText.includes('service unavailable')) {
+                return 'SERVER_ERROR';
+            }
+            
+            return null;
+        """)
+        return error
+    except:
+        return None
+
+
 def main():
     """主函数"""
     log("INFO", "=" * 50)
@@ -614,6 +668,15 @@ def main():
                         except:
                             pass
                 
+                # 首次访问后检查页面错误
+                page_error = check_page_error(sb)
+                if page_error:
+                    sp_error = screenshot_path("00-page-error")
+                    sb.save_screenshot(sp_error)
+                    log("ERROR", f"❌ 首次访问出错: {page_error}")
+                    notify_telegram(False, "访问失败", f"页面错误: {page_error}", sp_error)
+                    sys.exit(1)
+                
                 # 首次访问后检查 IP 是否被阻止
                 if check_access_blocked(sb):
                     sp_blocked = screenshot_path("00-ip-blocked")
@@ -643,6 +706,19 @@ def main():
                 
                 current_url = sb.get_current_url()
                 log("INFO", f"当前 URL: {current_url}")
+                
+                # 检查页面错误
+                page_error = check_page_error(sb)
+                if page_error:
+                    sp_error = screenshot_path("01-session-error")
+                    sb.save_screenshot(sp_error)
+                    log("ERROR", f"❌ Session 页面错误: {page_error}")
+                    
+                    if page_error == "TOO_MANY_REDIRECTS":
+                        notify_telegram(False, "Cookie 失效", "重定向次数过多\nCookie 已失效，请重新获取", sp_error)
+                    else:
+                        notify_telegram(False, "页面错误", f"错误类型: {page_error}", sp_error)
+                    sys.exit(1)
                 
                 sp_session = screenshot_path("01-session-check")
                 sb.save_screenshot(sp_session)
@@ -676,6 +752,46 @@ def main():
                 
                 current_url = sb.get_current_url()
                 log("INFO", f"当前 URL: {current_url}")
+                
+                # 检查页面错误
+                page_error = check_page_error(sb)
+                if page_error:
+                    sp_error = screenshot_path("02-page-error")
+                    sb.save_screenshot(sp_error)
+                    
+                    if page_error == "TOO_MANY_REDIRECTS":
+                        log("ERROR", "❌ 重定向次数过多，Cookie 可能已失效")
+                        notify_telegram(False, "Cookie 失效", "重定向次数过多\nCookie 已失效，请重新获取", sp_error)
+                    elif page_error == "ACCESS_BLOCKED":
+                        log("ERROR", "❌ 访问被阻止")
+                        notify_telegram(False, "访问被阻止", "IP 被限制，请更换代理", sp_error)
+                    else:
+                        log("ERROR", f"❌ 页面错误: {page_error}")
+                        notify_telegram(False, "页面错误", f"错误类型: {page_error}", sp_error)
+                    sys.exit(1)
+                
+                # 验证是否成功进入 free_panel 页面
+                if "/free_panel" not in current_url:
+                    sp_wrong = screenshot_path("02-wrong-page")
+                    sb.save_screenshot(sp_wrong)
+                    log("WARN", f"⚠️ 未能进入 Free Plans 页面，当前: {current_url}")
+                    
+                    # 尝试再次访问
+                    log("INFO", "🔄 重试访问 Free Plans...")
+                    sb.uc_open_with_reconnect(FREE_PANEL_URL, reconnect_time=10)
+                    time.sleep(5)
+                    
+                    current_url = sb.get_current_url()
+                    log("INFO", f"重试后 URL: {current_url}")
+                    
+                    # 再次检查
+                    page_error = check_page_error(sb)
+                    if page_error or "/free_panel" not in current_url:
+                        sp_fail = screenshot_path("02-access-failed")
+                        sb.save_screenshot(sp_fail)
+                        log("ERROR", "❌ 无法访问 Free Plans 页面")
+                        notify_telegram(False, "访问失败", f"无法进入 Free Plans\n当前页面: {current_url}\nCookie 可能已失效", sp_fail)
+                        sys.exit(1)
                 
                 if check_access_blocked(sb):
                     sp_blocked = screenshot_path("02-blocked")
@@ -976,4 +1092,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main())
