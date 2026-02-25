@@ -43,6 +43,21 @@ COOKIES_STR = os.environ.get("BILLING_KERIT_COOKIES", "")
 SCREENSHOT_DIR = Path("output/screenshots")
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
+# Cookie 失效提示（复用）
+COOKIE_RENEW_TIP = "\n\n⚠️ 注意: 请使用与脚本相同的代理网络获取 Cookie"
+
+COOKIE_HELP_DETAIL = (
+    "Cookie 已失效，请手动更新\n\n"
+    "📝 *Cookie 格式:*\n"
+    "`session_id=值; cf_clearance=值`\n\n"
+    "💡 *获取方式:*\n"
+    "1. 浏览器登录 billing.kerit.cloud\n"
+    "2. F12 → Application → Cookies\n"
+    "3. 复制 `session_id` 和 `cf_clearance` 的值\n"
+    "4. 更新 GitHub Secret: `BILLING_KERIT_COOKIES`"
+    + COOKIE_RENEW_TIP
+)
+
 
 def log(level: str, message: str):
     """日志输出"""
@@ -462,7 +477,7 @@ def handle_turnstile(sb, max_attempts: int = 6) -> bool:
             time.sleep(3)
             
             is_checked = sb.execute_script("""
-                var response = document.querySelector('input[name="cf-turnstile-response"]');
+                var response = document.querySelector('input[name="cf-turnance-response"]');
                 return response && response.value && response.value.length > 10;
             """)
             
@@ -585,6 +600,58 @@ def check_page_error(sb) -> Optional[str]:
         return None
 
 
+def get_error_notify_message(page_error: str, context: str = "") -> tuple:
+    """
+    根据页面错误类型生成通知标题和消息（复用）
+    返回: (title, message)
+    """
+    # 与 Cookie/会话相关的错误 → 附加 Cookie 提示
+    cookie_errors = {
+        "TOO_MANY_REDIRECTS": (
+            "Cookie 失效",
+            f"重定向次数过多，Cookie 已失效，请重新获取{COOKIE_RENEW_TIP}"
+        ),
+        "CONNECTION_ERROR": (
+            "连接错误",
+            f"页面连接失败，Cookie 可能已失效或代理异常{COOKIE_RENEW_TIP}"
+        ),
+        "PAGE_NOT_WORKING": (
+            "页面异常",
+            f"页面不工作，Cookie 可能已失效{COOKIE_RENEW_TIP}"
+        ),
+    }
+    
+    # 非 Cookie 相关的错误
+    other_errors = {
+        "ACCESS_BLOCKED": (
+            "访问被阻止",
+            "IP 被限制，请更换代理"
+        ),
+        "NOT_FOUND": (
+            "页面未找到",
+            "页面 404，服务可能已变更"
+        ),
+        "SERVER_ERROR": (
+            "服务器错误",
+            "服务器内部错误，请稍后重试"
+        ),
+    }
+    
+    if page_error in cookie_errors:
+        title, message = cookie_errors[page_error]
+    elif page_error in other_errors:
+        title, message = other_errors[page_error]
+    else:
+        title = "页面错误"
+        message = f"错误类型: {page_error}{COOKIE_RENEW_TIP}"
+    
+    # 添加上下文信息
+    if context:
+        message = f"[{context}] {message}"
+    
+    return title, message
+
+
 def main():
     """主函数"""
     log("INFO", "=" * 50)
@@ -674,7 +741,8 @@ def main():
                     sp_error = screenshot_path("00-page-error")
                     sb.save_screenshot(sp_error)
                     log("ERROR", f"❌ 首次访问出错: {page_error}")
-                    notify_telegram(False, "访问失败", f"页面错误: {page_error}", sp_error)
+                    title, message = get_error_notify_message(page_error, "首次访问")
+                    notify_telegram(False, title, message, sp_error)
                     sys.exit(1)
                 
                 # 首次访问后检查 IP 是否被阻止
@@ -713,11 +781,8 @@ def main():
                     sp_error = screenshot_path("01-session-error")
                     sb.save_screenshot(sp_error)
                     log("ERROR", f"❌ Session 页面错误: {page_error}")
-                    
-                    if page_error == "TOO_MANY_REDIRECTS":
-                        notify_telegram(False, "Cookie 失效", "重定向次数过多\nCookie 已失效，请重新获取\n注意: 请使用与脚本相同的代理网络获取", sp_error)
-                    else:
-                        notify_telegram(False, "页面错误", f"错误类型: {page_error}", sp_error)
+                    title, message = get_error_notify_message(page_error, "Session 页面")
+                    notify_telegram(False, title, message, sp_error)
                     sys.exit(1)
                 
                 sp_session = screenshot_path("01-session-check")
@@ -726,21 +791,7 @@ def main():
                 
                 if not check_login_status(sb):
                     log("ERROR", "❌ 未登录，Cookie 可能已失效")
-                    
-                    cookie_help = (
-                        "Cookie 已失效，请手动更新\n\n"
-                        "📝 *Cookie 格式:*\n"
-                        "`session_id=值; cf_clearance=值`\n\n"
-                        "💡 *获取方式:*\n"
-                        "1. 浏览器登录 billing.kerit.cloud\n"
-                        "2. F12 → Application → Cookies\n"
-                        "3. 复制 `session_id` 和 `cf_clearance` 的值\n"
-                        "4. 更新 GitHub Secret: `BILLING_KERIT_COOKIES`\n\n"
-                        "⚠️ *注意:* 请使用与脚本相同的代理网络获取 Cookie，"
-                        "cf\\_clearance 与 IP 绑定"
-                    )
-                    
-                    notify_telegram(False, "登录失败", cookie_help, sp_session)
+                    notify_telegram(False, "登录失败", COOKIE_HELP_DETAIL, sp_session)
                     sys.exit(1)
                 
                 log("INFO", "✅ Cookie 有效，已登录")
@@ -758,16 +809,9 @@ def main():
                 if page_error:
                     sp_error = screenshot_path("02-page-error")
                     sb.save_screenshot(sp_error)
-                    
-                    if page_error == "TOO_MANY_REDIRECTS":
-                        log("ERROR", "❌ 重定向次数过多，Cookie 可能已失效")
-                        notify_telegram(False, "Cookie 失效", "重定向次数过多\nCookie 已失效，请重新获取", sp_error)
-                    elif page_error == "ACCESS_BLOCKED":
-                        log("ERROR", "❌ 访问被阻止")
-                        notify_telegram(False, "访问被阻止", "IP 被限制，请更换代理", sp_error)
-                    else:
-                        log("ERROR", f"❌ 页面错误: {page_error}")
-                        notify_telegram(False, "页面错误", f"错误类型: {page_error}", sp_error)
+                    log("ERROR", f"❌ Free Plans 页面错误: {page_error}")
+                    title, message = get_error_notify_message(page_error, "Free Plans")
+                    notify_telegram(False, title, message, sp_error)
                     sys.exit(1)
                 
                 # 验证是否成功进入 free_panel 页面
@@ -790,7 +834,14 @@ def main():
                         sp_fail = screenshot_path("02-access-failed")
                         sb.save_screenshot(sp_fail)
                         log("ERROR", "❌ 无法访问 Free Plans 页面")
-                        notify_telegram(False, "访问失败", f"无法进入 Free Plans\n当前页面: {current_url}\nCookie 可能已失效", sp_fail)
+                        
+                        if page_error:
+                            title, message = get_error_notify_message(page_error, "Free Plans 重试")
+                        else:
+                            title = "访问失败"
+                            message = f"无法进入 Free Plans\n当前页面: {current_url}\nCookie 可能已失效{COOKIE_RENEW_TIP}"
+                        
+                        notify_telegram(False, title, message, sp_fail)
                         sys.exit(1)
                 
                 if check_access_blocked(sb):
